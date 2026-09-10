@@ -141,7 +141,7 @@ Phase 5 adds an observation-only regime boundary:
 ```text
 completed Phase 1 MarketBar + causal Phase 2 FeatureObservation values
 → immutable RegimeContext → versioned stateless detector → RegimeState
-→ future Phase 6 signal fusion
+→ Phase 6 signal fusion
 ```
 
 `RegimeContext` uses the Phase 1 calendar and accepts only same-instrument,
@@ -150,9 +150,24 @@ baseline detector independently returns trend, volatility, liquidity, and
 data/session dimensions rather than a combinatorial trade taxonomy. A state
 includes detector/version/configuration identity and compact feature
 provenance. It has no strategy, backtesting execution, portfolio, risk,
-network, broker, ML, optimization, paper, or live dependency. Phase 6 may
-consume state through a separate fusion boundary; Phase 5 cannot change an
-order, fill, P&L, or strategy decision.
+network, broker, ML, optimization, paper, or live dependency. Phase 5 cannot
+change an order, fill, P&L, or strategy decision.
+
+Phase 6 adds the deterministic fusion boundary:
+
+```text
+Phase 4 StrategySignal values + Phase 5 RegimeState
+→ immutable FusionContext → versioned FusionPolicy → UnifiedTradeIntent
+→ future Phase 7 risk/sizing → existing Phase 3 order/execution path
+```
+
+Fusion normalizes the existing signal contract, enforces exact decision-time,
+instrument, and timeframe alignment, evaluates explicit regime compatibility,
+and resolves eligible strategy evidence with a versioned policy. Its unified
+intent has no quantity and cannot become a Phase 3 order directly: position
+sizing, portfolio constraints, risk veto, and adaptation to execution remain
+the Phase 7 boundary. The Phase 6 package has no broker, network, credential,
+portfolio, backtesting-execution, ML, optimization, paper, or live dependency.
 
 ## Phase 0 scope
 

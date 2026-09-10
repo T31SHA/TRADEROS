@@ -40,10 +40,13 @@ independent trend, volatility, liquidity, and data/session dimensions, plus
 offline descriptive stability analysis. It is observation-only: filtering,
 strategy coupling, and trade effects are deferred to Phase 6.
 
-## Phase 6 — Signal fusion
+## Phase 6 — Signal fusion — complete
 
-Deterministic combination of strategy signals using confidence, risk, regime,
-cost, and correlation evidence.
+Deterministic, versioned strategy-signal normalization, strict causal alignment,
+regime compatibility, duplicate-safe conflict resolution, and auditable
+quantity-free unified intents. The baseline is explicit unweighted majority
+voting; it does not use risk, costs, correlation, performance optimization, or
+learned weights.
 
 ## Phase 7 — Risk firewall
 
