@@ -31,7 +31,7 @@ execution path may submit orders, and only after the risk firewall approves.
 
 | Boundary | Responsibility | Explicit non-responsibility |
 | --- | --- | --- |
-| `data` | ingestion, normalization, validation, retrieval | strategy decisions |
+| `data` | provider-neutral contracts, ingestion, normalization, validation, retrieval | strategy decisions |
 | `features` | leakage-safe derived observations | order placement |
 | `regimes` | interpretable market-state classification | arbitrary model deployment |
 | `strategies` | reproducible signal proposals | risk veto or broker calls |
@@ -76,9 +76,23 @@ provider-specific schemas and credentials. Corporate actions, delistings,
 market sessions, spreads, rollover, and calendars belong in the data/adapters
 layers and must be represented explicitly rather than silently fabricated.
 
+Phase 1 implements this path:
+
+```text
+MarketDataProvider → BarCandidate → UTC normalization → MarketBar validation
+→ DataQualityEngine → MarketDataStore
+```
+
+`DeterministicLocalProvider` is the only implemented provider and requires no
+credentials or network. `SqlAlchemyMarketDataStore` targets PostgreSQL and is
+tested with SQLite; `InMemoryMarketDataStore` is for deterministic offline
+tests. Raw and adjusted data are distinct through `adjustment_policy` and the
+database uniqueness key includes that policy.
+
 ## Phase 0 scope
 
-This phase establishes policy, package boundaries, configuration, logging, and
-quality gates. It deliberately does not include a database, Redis, broker,
-market-data provider, strategy, backtester, API server, dashboard, or live
-credential.
+Phase 0 established policy, package boundaries, configuration, logging, and
+quality gates. Phase 1 adds the market-data domain, deterministic local provider,
+ingestion, quality, lineage, storage adapters, and PostgreSQL migration. It
+still does not include Redis, a real external provider, broker, strategy,
+backtester, API server, dashboard, or live credential.

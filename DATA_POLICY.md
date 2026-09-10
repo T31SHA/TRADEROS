@@ -31,3 +31,40 @@ blocking tests for any phase that introduces derived data.
 Providers are accessed through interfaces and adapters. Credentials come only
 from environment variables or an approved secret manager. They must never be
 committed, logged, or embedded in notebooks, tests, fixtures, or documentation.
+
+## Implemented Phase 1 behavior
+
+The canonical models are `Instrument`, `Timeframe`, `BarCandidate`, and
+`MarketBar`. Provider-neutral candidates are normalized by
+`normalize_and_validate_candidate`; naive timestamps are rejected unless a
+source timezone is explicitly supplied. Ambiguous and nonexistent DST local
+times are rejected. Canonical bar and ingestion timestamps must be UTC.
+
+The only implemented provider is the deterministic `local` provider. It serves
+caller-supplied test/offline candidates and uses no credentials or network.
+External providers must implement `MarketDataProvider` and translate their
+payloads inside the adapter.
+
+`IngestionService` applies bounded exponential retries only to transient
+provider errors, records rejected records as quality events, performs
+source/timeframe/range checks, and upserts valid bars. The in-memory store and
+the SQLAlchemy/PostgreSQL store enforce the logical identity:
+
+```text
+symbol + timeframe + timestamp + source + adjustment_policy
+```
+
+The PostgreSQL migration adds check constraints for prices, OHLC relationships,
+volume, bid/ask fields, and uniqueness, plus indexes for bounded series range
+queries. Raw and adjusted datasets are never overwritten into one another.
+
+`ForexCalendar` models the Phase 1 weekend closure from Friday 22:00 UTC to
+Sunday 22:00 UTC. `UsEquityCalendar` models regular US sessions in
+`America/New_York`; holidays and early closes are injected by the caller. No
+holiday list is silently hardcoded. The known limitation is that broker-specific
+Forex rollover and a production exchange-holiday source are not yet connected.
+
+Lineage records include provider, symbol, timeframe, range, adjustment policy,
+configuration version, stable dataset version, quality status, ingestion runs,
+and quality events. Ingestion timestamps are operational metadata and therefore
+vary between runs; the dataset version excludes that non-deterministic field.

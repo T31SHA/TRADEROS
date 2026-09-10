@@ -5,10 +5,11 @@
 Repository governance, modular package boundaries, configuration, logging,
 testing, linting, typing, CI, and documentation. No trading logic.
 
-## Phase 1 — Data engine
+## Phase 1 — Data engine — complete
 
 Provider interfaces, UTC-normalized market-data models, validation, storage,
-retrieval, caching, calendars, and data-quality tests.
+retrieval, calendars, lineage, and data-quality tests. Redis caching remains
+deferred until a measured use case exists.
 
 ## Phase 2 — Feature engine
 

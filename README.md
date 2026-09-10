@@ -7,11 +7,12 @@ does not treat an LLM as a trading authority.
 
 ## Status
 
-Phase 0 — foundation — is complete. The repository currently contains the
-governance documents, Python package boundaries, validated application
-configuration, structured logging foundation, tests, static-analysis tooling,
-and CI configuration. Trading, broker connectivity, persistence, and market
-data ingestion are intentionally not implemented yet.
+Phase 1 — market data infrastructure — is complete. The repository now contains
+canonical instrument/timeframe/bar contracts, explicit UTC normalization,
+calendar-aware quality checks, a deterministic local provider, bounded
+idempotent ingestion, in-memory storage for offline research, and a
+PostgreSQL-targeted SQLAlchemy storage adapter. Trading, broker connectivity,
+strategies, and live execution remain intentionally unimplemented.
 
 ## Safety defaults
 
@@ -34,6 +35,11 @@ pytest
 ruff check .
 mypy src
 ```
+
+Phase 1 has no network provider or CLI command. The deterministic local provider
+is exercised through the ingestion service in tests. A PostgreSQL deployment
+must apply `migrations/001_market_data_foundation.sql` before using the
+SQLAlchemy store; Phase 1 does not connect to a live database automatically.
 
 Configuration is read from environment variables or `.env`. `.env` is ignored
 by git; only safe placeholders belong in `.env.example`.

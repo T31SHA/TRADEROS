@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     timezone: str = Field(default="UTC", min_length=1)
     trading_mode: TradingMode = TradingMode.RESEARCH
     live_trading_enabled: bool = False
+    market_data_provider: str = Field(default="local", min_length=1)
+    data_max_retries: int = Field(default=3, ge=0, le=10)
+    data_retry_backoff_seconds: float = Field(default=0.0, ge=0.0, le=300.0)
     database_url: str = Field(
         default="postgresql+psycopg://traderos:change-me@localhost:5432/traderos",
         min_length=1,
@@ -50,8 +53,7 @@ class Settings(BaseSettings):
 
         if self.trading_mode is TradingMode.LIVE and not self.live_trading_enabled:
             raise ConfigurationError(
-                "Live mode requires both TRADING_MODE=live and "
-                "LIVE_TRADING_ENABLED=true."
+                "Live mode requires both TRADING_MODE=live and LIVE_TRADING_ENABLED=true."
             )
         return self
 
