@@ -1,0 +1,84 @@
+# Architecture
+
+## Phase 0 decision
+
+TRADEROS starts as a modular monolith. The repository uses explicit package
+boundaries so that a component can later be extracted if its operational needs
+justify it, but the initial system avoids the reliability and deployment cost
+of unnecessary microservices.
+
+## Dependency direction
+
+```text
+apps (API / dashboard / worker)
+        ↓
+application orchestration
+        ↓
+domain packages (data, features, regimes, strategies, signals, risk,
+                portfolio, execution, research, learning, backtesting)
+        ↓
+core contracts, configuration, time, errors, observability
+        ↓
+adapters (database, Redis, providers, brokers, external services)
+```
+
+Domain logic must not depend on a specific market-data provider, broker, web
+framework, database driver, or LLM. Adapters implement interfaces owned by the
+domain/application layer. Strategies produce normalized signals; only the
+execution path may submit orders, and only after the risk firewall approves.
+
+## Package boundaries
+
+| Boundary | Responsibility | Explicit non-responsibility |
+| --- | --- | --- |
+| `data` | ingestion, normalization, validation, retrieval | strategy decisions |
+| `features` | leakage-safe derived observations | order placement |
+| `regimes` | interpretable market-state classification | arbitrary model deployment |
+| `strategies` | reproducible signal proposals | risk veto or broker calls |
+| `signals` | signal schema and deterministic fusion | LLM override |
+| `risk` | portfolio and trade constraints; veto authority | strategy optimization |
+| `portfolio` | positions, cash, equity, attribution | broker-specific protocols |
+| `backtesting` | event-driven simulation and metrics | claiming future profitability |
+| `execution` | order lifecycle orchestration | bypassing risk |
+| `research` | experiment proposals, validation, review artifacts | live deployment |
+| `learning` | attribution and degradation analysis | automatic promotion |
+| `models` | versioned strategies, features, datasets, models | untraceable production decisions |
+| `database` | persistence adapters and migrations | manual schema drift |
+| `monitoring` | logs, metrics, health, freshness, heartbeat | hiding failures |
+
+## Safety boundary
+
+The intended production path is:
+
+```text
+market data → features → regime → strategy signals → signal fusion
+→ risk firewall → order intent → broker/paper adapter → fills
+→ portfolio → attribution/monitoring
+```
+
+The risk firewall is a mandatory gate. If risk calculations fail, input data is
+stale, or required controls cannot be evaluated, the default action is **do not
+trade**. LLM-assisted research can create experiment proposals but cannot
+modify risk limits, approve deployment, or submit an order.
+
+## Configuration and environment
+
+`traderos.core.config.Settings` is the single application configuration entry
+point. Configuration is externalized through environment variables and `.env`.
+Live mode has a fail-closed check requiring both `TRADING_MODE=live` and
+`LIVE_TRADING_ENABLED=true`; this is only a configuration precondition, not
+permission to trade.
+
+## Data and time
+
+UTC is the canonical internal timestamp convention. Provider adapters own
+provider-specific schemas and credentials. Corporate actions, delistings,
+market sessions, spreads, rollover, and calendars belong in the data/adapters
+layers and must be represented explicitly rather than silently fabricated.
+
+## Phase 0 scope
+
+This phase establishes policy, package boundaries, configuration, logging, and
+quality gates. It deliberately does not include a database, Redis, broker,
+market-data provider, strategy, backtester, API server, dashboard, or live
+credential.
