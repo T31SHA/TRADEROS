@@ -24,6 +24,26 @@ currency, correlated exposure, leverage, daily loss, strategy drawdown,
 portfolio drawdown, volatility, liquidity, spread, sessions, concurrent
 positions, and emergency shutdown.
 
+## Implemented Phase 7 firewall
+
+Phase 7 implements `risk_firewall` v1 as a deterministic, immutable,
+quantity-free pre-trade gate. It rejects a directional unified intent if the
+kill switch is active; health, quote/data, regime, or portfolio snapshot is
+missing/stale/future/invalid; liquidity/session state is unsafe; or configured
+capital, margin, leverage, exposure, position, pending-intent, daily-loss,
+drawdown, or persisted-lock limits are breached. All limits are strict frozen
+configuration with a deterministic identity, and every result has ordered check
+records and stable reason codes.
+
+An approval is bounded by maximum new notional and maximum loss at stop, not an
+order quantity. An opposite intent may receive a reduction-only authorization
+with zero new notional; it cannot silently reverse an existing position. The
+pure firewall cannot persist locks or intent reservations, so the future
+portfolio/risk-state owner must supply those explicit snapshots and honor the
+returned bounds before creating an order. Broker-specific margin, correlation
+groups, strategy attribution, sizing, paper trading, and live execution remain
+deferred.
+
 ## Live activation
 
 Live trading is disabled by default. At minimum, both of these configuration

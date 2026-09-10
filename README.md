@@ -7,23 +7,24 @@ does not treat an LLM as a trading authority.
 
 ## Status
 
-Phase 6 — deterministic signal fusion — is complete. The
+Phase 7 — deterministic risk firewall — is complete. The
 repository contains the Phase 1 data foundation, Phase 2 leakage-safe feature
 engine, Phase 3 event-driven backtester, and four deterministic Phase 4
 baselines: Forex trend, Forex breakout, equity momentum, and equity breakout.
 It also contains a structured, versioned, stateless Phase 5 regime state with
-trend, volatility, liquidity, and data/session dimensions, plus Phase 6
-versioned majority-vote signal fusion. Fusion creates an auditable,
-quantity-free unified intent; it does not size, risk-approve, or execute a
-trade. These components are not validated production edges. Risk controls,
-brokers, paper trading, and live execution remain intentionally unimplemented.
+trend, volatility, liquidity, and data/session dimensions, Phase 6 versioned
+majority-vote signal fusion, and a Phase 7 fail-closed risk firewall. Fusion
+creates an auditable quantity-free unified intent; the firewall returns only an
+auditable veto or bounded quantity-free authorization. Neither sizes nor
+executes a trade. These components are not validated production edges. Brokers,
+paper trading, and live execution remain intentionally unimplemented.
 
 ## Safety defaults
 
 - Default mode: `research`
 - Live trading: disabled
 - Real broker credentials: not included
-- Risk engine: fail-closed by design in the future architecture
+- Risk firewall: deterministic, fail-closed, and quantity-free
 - No daily profit target is encoded as a trading rule
 
 ## Quick start

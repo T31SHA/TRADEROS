@@ -48,9 +48,14 @@ quantity-free unified intents. The baseline is explicit unweighted majority
 voting; it does not use risk, costs, correlation, performance optimization, or
 learned weights.
 
-## Phase 7 — Risk firewall
+## Phase 7 — Risk firewall — complete
 
-Portfolio-level limits, fail-closed behavior, kill switch, and adversarial tests.
+Fail-closed, versioned deterministic pre-trade gate with kill switch, health,
+freshness/quote, regime, exposure, leverage, capital/margin, daily-loss,
+drawdown-lock, concurrent-intent, and duplicate-reservation checks. It returns
+only auditable bounded quantity-free risk authorizations or vetoes; portfolio
+sizing, persistent reservations/locks, paper trading, and execution remain
+later phases.
 
 ## Phase 8 — Paper trading
 

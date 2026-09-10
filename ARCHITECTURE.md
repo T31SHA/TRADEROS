@@ -169,6 +169,24 @@ sizing, portfolio constraints, risk veto, and adaptation to execution remain
 the Phase 7 boundary. The Phase 6 package has no broker, network, credential,
 portfolio, backtesting-execution, ML, optimization, paper, or live dependency.
 
+Phase 7 adds the fail-closed risk boundary:
+
+```text
+Phase 6 UnifiedTradeIntent + aligned Phase 5 RegimeState + current risk inputs
+→ immutable RiskEvaluationContext → RiskFirewall v1 → RiskDecision
+→ future portfolio/sizing → existing Phase 3 order/execution path
+```
+
+The firewall has veto authority and is a pure, deterministic evaluator. It
+returns either a rejection with stable machine-readable reasons or an approved
+quantity-free authorization with maximum notional/loss constraints. It does not
+size a position, mutate account state, submit an order, or adapt directly to a
+Phase 3 order. Current inputs are explicit UTC snapshots for health, quote/data
+quality, portfolio exposure, cash/margin, P&L, high-water mark, locks, and
+duplicate reservations. Unknown, stale, future-dated, invalid, or missing
+safety inputs reject. Persisting locks/reservations and creating a bounded order
+remain future portfolio/sizing responsibilities; no execution semantics change.
+
 ## Phase 0 scope
 
 Phase 0 established policy, package boundaries, configuration, logging, and
