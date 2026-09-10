@@ -11,6 +11,12 @@ from traderos.features.errors import FeatureValidationError
 from traderos.features.models import FeatureContext, FeatureObservation, FeatureSet, FeatureStatus
 
 
+def _parameter_key(observation: FeatureObservation) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        sorted((name, str(value)) for name, value in observation.lineage.parameters.items())
+    )
+
+
 def validate_bar_series(bars: Sequence[MarketBar], context: FeatureContext) -> None:
     """Reject unsafe series before any numerical calculation begins."""
 
@@ -45,13 +51,16 @@ def validate_bar_series(bars: Sequence[MarketBar], context: FeatureContext) -> N
 def validate_feature_set(feature_set: FeatureSet) -> FeatureSet:
     """Validate long-form observations while allowing expected warm-up nulls."""
 
-    seen: set[tuple[str, int, object]] = set()
-    by_feature: dict[tuple[str, int], list[FeatureObservation]] = defaultdict(list)
+    seen: set[tuple[str, int, object, tuple[tuple[str, str], ...]]] = set()
+    by_feature: dict[tuple[str, int, tuple[tuple[str, str], ...]], list[FeatureObservation]] = (
+        defaultdict(list)
+    )
     for observation in feature_set.observations:
         key = (
             observation.feature_name,
             observation.feature_version,
             observation.observation_timestamp,
+            _parameter_key(observation),
         )
         if key in seen:
             raise FeatureValidationError(f"duplicate feature observation: {key!r}")
@@ -73,7 +82,9 @@ def validate_feature_set(feature_set: FeatureSet) -> FeatureSet:
                 raise FeatureValidationError("value observations must contain finite numbers")
         elif observation.value is not None:
             raise FeatureValidationError("null-status observations must not contain values")
-        by_feature[(observation.feature_name, observation.feature_version)].append(observation)
+        by_feature[
+            (observation.feature_name, observation.feature_version, _parameter_key(observation))
+        ].append(observation)
 
     for feature_key, observations in by_feature.items():
         timestamps = [observation.observation_timestamp for observation in observations]

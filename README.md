@@ -7,12 +7,14 @@ does not treat an LLM as a trading authority.
 
 ## Status
 
-Phase 1 — market data infrastructure — is complete. The repository now contains
-canonical instrument/timeframe/bar contracts, explicit UTC normalization,
-calendar-aware quality checks, a deterministic local provider, bounded
-idempotent ingestion, in-memory storage for offline research, and a
-PostgreSQL-targeted SQLAlchemy storage adapter. Trading, broker connectivity,
-strategies, and live execution remain intentionally unimplemented.
+Phase 4 — strategy framework and baseline strategies — is complete. The
+repository contains the Phase 1 data foundation, Phase 2 leakage-safe feature
+engine, Phase 3 event-driven backtester, and four deterministic Phase 4
+baselines: Forex trend, Forex breakout, equity momentum, and equity breakout.
+They produce versioned signals/order intents and run through the real Phase 3
+execution simulator. They are not validated production edges. Regime detection,
+risk controls, brokers, paper trading, and live execution remain intentionally
+unimplemented.
 
 ## Safety defaults
 
@@ -55,7 +57,8 @@ by git; only safe placeholders belong in `.env.example`.
 - `docker/` — container definitions and operational assets
 
 See `ARCHITECTURE.md` for boundaries and dependency direction, `ROADMAP.md` for
-the delivery sequence, and the policy documents for safety requirements.
+the delivery sequence, `docs/STRATEGY_ENGINE.md` for the implemented strategy
+contract, and the policy documents for safety requirements.
 
 ## Development quality gates
 

@@ -49,8 +49,13 @@ key is:
 
 ```text
 symbol + timeframe + observation_timestamp + feature_name + feature_version
-+ source_dataset_version + adjustment_policy
++ source_dataset_version + adjustment_policy + effective_parameters
 ```
+
+`effective_parameters` are part of the logical identity. Two requests for the
+same feature/version with different windows, such as fast and slow EMA, remain
+distinct through computation, validation, storage, and the Phase 3 strategy
+context. Exact duplicate requests are rejected.
 
 Phase 2 supplies `InMemoryFeatureStore` for reproducible offline research and
 tests. A database adapter can implement the same `FeatureStore` protocol later

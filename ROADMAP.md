@@ -24,10 +24,14 @@ market/limit/stop execution, costs, spread, slippage, Decimal portfolio and FX
 accounting, trade ledger, equity curve, experiment identity, and performance
 metrics. Risk-firewall integration and live/paper execution remain later work.
 
-## Phase 4 — Strategies
+## Phase 4 — Strategies — complete
 
-Four independently testable strategies: Forex trend, Forex breakout, equity
-momentum, and equity breakout.
+Versioned signal-only strategy contract, immutable decision-time context,
+parameter-aware feature provenance, registry validation, and four
+independently testable deterministic baselines: Forex trend, Forex breakout,
+equity momentum, and equity breakout. Each baseline is integrated with the
+Phase 3 engine using explicit next-bar execution and cost models. No parameter
+optimization or profitability claim is included.
 
 ## Phase 5 — Regime engine
 

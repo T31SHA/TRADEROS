@@ -25,7 +25,14 @@ FeatureKey = tuple[
     int,
     str,
     AdjustmentPolicy,
+    tuple[tuple[str, str], ...],
 ]
+
+
+def _parameter_key(observation: FeatureObservation) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        sorted((name, str(value)) for name, value in observation.lineage.parameters.items())
+    )
 
 
 def _key(observation: FeatureObservation, dataset_version: str) -> FeatureKey:
@@ -37,6 +44,7 @@ def _key(observation: FeatureObservation, dataset_version: str) -> FeatureKey:
         observation.feature_version,
         dataset_version,
         observation.lineage.adjustment_policy,
+        _parameter_key(observation),
     )
 
 
@@ -116,6 +124,7 @@ class InMemoryFeatureStore:
                     observation.observation_timestamp,
                     observation.feature_name,
                     observation.feature_version,
+                    _parameter_key(observation),
                 ),
             )
         )

@@ -120,6 +120,22 @@ next-bar execution policy, and keeps market-event time separate from decision
 and fill time. It is offline and does not include the future risk firewall,
 paper trading, or live execution.
 
+Phase 4 adds the signal-only strategy boundary:
+
+```text
+causal FeatureObservation values → immutable StrategyContext
+→ versioned StrategySignal/OrderIntent → BacktestStrategyAdapter
+→ Phase 3 Order → execution simulator → portfolio/accounting
+```
+
+The strategy registry validates explicit identity, supported asset/timeframe
+scope, and required feature definitions. Parameterized feature observations
+remain distinct by their lineage parameters, which prevents two instances of a
+feature such as fast and slow EMA from colliding in a backtest context.
+Strategies cannot mutate portfolio state or call a broker. Phase 4 implements
+four transparent baseline rules only; regime detection, fusion, risk controls,
+optimization, ML, paper trading, and live execution remain later phases.
+
 ## Phase 0 scope
 
 Phase 0 established policy, package boundaries, configuration, logging, and

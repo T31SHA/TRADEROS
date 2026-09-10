@@ -122,7 +122,10 @@ class FeatureEngine:
         requests_tuple = tuple(requests)
         if not requests_tuple:
             raise FeatureConfigurationError("at least one feature request is required")
-        keys = [(request.name, request.version) for request in requests_tuple]
+        keys = [
+            (request.name, request.version, tuple(sorted(request.parameters.items())))
+            for request in requests_tuple
+        ]
         if len(set(keys)) != len(keys):
             raise FeatureConfigurationError("duplicate feature requests are not allowed")
         observations: list[FeatureObservation] = []

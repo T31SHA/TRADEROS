@@ -40,6 +40,15 @@ from traderos.data.calendars import MarketCalendar
 from traderos.data.time import require_utc
 from traderos.features.models import FeatureObservation, FeatureStatus
 
+FeatureParameterKey = tuple[tuple[str, str], ...]
+FeatureMapKey = tuple[str, datetime, tuple[str, int, FeatureParameterKey]]
+
+
+def _parameter_key(observation: FeatureObservation) -> FeatureParameterKey:
+    return tuple(
+        sorted((name, str(value)) for name, value in observation.lineage.parameters.items())
+    )
+
 
 @dataclass
 class _ScheduledOrder:
@@ -143,6 +152,9 @@ class BacktestEngine:
             snapshot = portfolio.snapshot(event_timestamp)
             equity_curve.append(snapshot)
             visible_features = self._visible_features(feature_map, bar, event_timestamp)
+            visible_observations = self._visible_feature_observations(
+                feature_map, bar, event_timestamp
+            )
             context = StrategyContext(
                 event_timestamp=event_timestamp,
                 bar=bar,
@@ -150,6 +162,7 @@ class BacktestEngine:
                 cash=snapshot.cash,
                 equity=snapshot.equity,
                 positions=snapshot.positions,
+                feature_observations=visible_observations,
             )
             try:
                 proposals = tuple(strategy.on_event(context))
@@ -261,8 +274,8 @@ class BacktestEngine:
         self,
         features: Iterable[FeatureObservation],
         bars: Sequence[MarketBar],
-    ) -> dict[tuple[str, datetime, tuple[str, int]], FeatureObservation]:
-        result: dict[tuple[str, datetime, tuple[str, int]], FeatureObservation] = {}
+    ) -> dict[FeatureMapKey, FeatureObservation]:
+        result: dict[FeatureMapKey, FeatureObservation] = {}
         allowed_symbols = set(self.config.instrument_symbols)
         allowed_versions = set(self.config.feature_versions)
         for observation in features:
@@ -277,21 +290,25 @@ class BacktestEngine:
             key = (
                 observation.instrument.canonical_symbol,
                 observation.observation_timestamp,
-                (observation.feature_name, observation.feature_version),
+                (
+                    observation.feature_name,
+                    observation.feature_version,
+                    _parameter_key(observation),
+                ),
             )
             if key in result:
                 raise CausalityViolation(f"duplicate feature observation: {key!r}")
-            if allowed_versions and key[2] not in allowed_versions:
+            if allowed_versions and key[2][:2] not in allowed_versions:
                 raise CausalityViolation("feature version was not declared in backtest config")
             result[key] = observation
-        supplied_versions = {key[2] for key in result}
+        supplied_versions = {key[2][:2] for key in result}
         if allowed_versions and not allowed_versions.issubset(supplied_versions):
             raise BacktestConfigurationError("configured feature versions were not supplied")
         return result
 
     @staticmethod
     def _visible_features(
-        feature_map: dict[tuple[str, datetime, tuple[str, int]], FeatureObservation],
+        feature_map: dict[FeatureMapKey, FeatureObservation],
         bar: MarketBar,
         event_timestamp: datetime,
     ) -> dict[tuple[str, int], float | None]:
@@ -303,10 +320,35 @@ class BacktestEngine:
                 continue
             if observation.availability_timestamp > event_timestamp:
                 continue
-            visible[feature_key] = (
+            visible[(feature_key[0], feature_key[1])] = (
                 observation.value if observation.status is FeatureStatus.VALUE else None
             )
         return visible
+
+    @staticmethod
+    def _visible_feature_observations(
+        feature_map: dict[FeatureMapKey, FeatureObservation],
+        bar: MarketBar,
+        event_timestamp: datetime,
+    ) -> tuple[FeatureObservation, ...]:
+        visible = [
+            observation
+            for (symbol, observation_timestamp, _), observation in feature_map.items()
+            if symbol == bar.symbol
+            and observation_timestamp <= bar.timestamp
+            and observation.availability_timestamp <= event_timestamp
+        ]
+        return tuple(
+            sorted(
+                visible,
+                key=lambda item: (
+                    item.observation_timestamp,
+                    item.feature_name,
+                    item.feature_version,
+                    _parameter_key(item),
+                ),
+            )
+        )
 
     @staticmethod
     def _eligible_orders(

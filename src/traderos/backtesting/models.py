@@ -18,6 +18,7 @@ from traderos.data.instruments import Instrument
 from traderos.data.lineage import AdjustmentPolicy
 from traderos.data.time import require_utc
 from traderos.data.timeframes import Timeframe
+from traderos.features.models import FeatureObservation
 
 
 def _finite_decimal(value: Decimal, *, positive: bool = False) -> Decimal:
@@ -451,6 +452,7 @@ class StrategyContext:
     cash: Decimal
     equity: Decimal
     positions: tuple[PositionSnapshot, ...]
+    feature_observations: tuple[FeatureObservation, ...] = ()
 
     def __post_init__(self) -> None:
         require_utc(self.event_timestamp)
