@@ -7,12 +7,14 @@ does not treat an LLM as a trading authority.
 
 ## Status
 
-Phase 4 — strategy framework and baseline strategies — is complete. The
+Phase 5 — causal regime detection — is complete. The
 repository contains the Phase 1 data foundation, Phase 2 leakage-safe feature
 engine, Phase 3 event-driven backtester, and four deterministic Phase 4
 baselines: Forex trend, Forex breakout, equity momentum, and equity breakout.
-They produce versioned signals/order intents and run through the real Phase 3
-execution simulator. They are not validated production edges. Regime detection,
+It also contains a structured, versioned, stateless Phase 5 regime state with
+trend, volatility, liquidity, and data/session dimensions. Regime detection is
+observation-only: it does not alter strategies, orders, fills, or portfolio
+accounting. These components are not validated production edges. Signal fusion,
 risk controls, brokers, paper trading, and live execution remain intentionally
 unimplemented.
 
@@ -57,8 +59,8 @@ by git; only safe placeholders belong in `.env.example`.
 - `docker/` — container definitions and operational assets
 
 See `ARCHITECTURE.md` for boundaries and dependency direction, `ROADMAP.md` for
-the delivery sequence, `docs/STRATEGY_ENGINE.md` for the implemented strategy
-contract, and the policy documents for safety requirements.
+the delivery sequence, `docs/STRATEGY_ENGINE.md` and `docs/REGIME_ENGINE.md` for
+implemented contracts, and the policy documents for safety requirements.
 
 ## Development quality gates
 

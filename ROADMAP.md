@@ -33,9 +33,12 @@ equity momentum, and equity breakout. Each baseline is integrated with the
 Phase 3 engine using explicit next-bar execution and cost models. No parameter
 optimization or profitability claim is included.
 
-## Phase 5 — Regime engine
+## Phase 5 — Regime engine — complete
 
-Interpretable regime detection, filtering, and regime attribution.
+Interpretable, versioned, causal, stateless market-state classification with
+independent trend, volatility, liquidity, and data/session dimensions, plus
+offline descriptive stability analysis. It is observation-only: filtering,
+strategy coupling, and trade effects are deferred to Phase 6.
 
 ## Phase 6 — Signal fusion
 

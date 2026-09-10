@@ -133,8 +133,26 @@ scope, and required feature definitions. Parameterized feature observations
 remain distinct by their lineage parameters, which prevents two instances of a
 feature such as fast and slow EMA from colliding in a backtest context.
 Strategies cannot mutate portfolio state or call a broker. Phase 4 implements
-four transparent baseline rules only; regime detection, fusion, risk controls,
-optimization, ML, paper trading, and live execution remain later phases.
+four transparent baseline rules only; fusion, risk controls, optimization, ML,
+paper trading, and live execution remain later phases.
+
+Phase 5 adds an observation-only regime boundary:
+
+```text
+completed Phase 1 MarketBar + causal Phase 2 FeatureObservation values
+→ immutable RegimeContext → versioned stateless detector → RegimeState
+→ future Phase 6 signal fusion
+```
+
+`RegimeContext` uses the Phase 1 calendar and accepts only same-instrument,
+same-timeframe features available no later than the UTC decision timestamp. The
+baseline detector independently returns trend, volatility, liquidity, and
+data/session dimensions rather than a combinatorial trade taxonomy. A state
+includes detector/version/configuration identity and compact feature
+provenance. It has no strategy, backtesting execution, portfolio, risk,
+network, broker, ML, optimization, paper, or live dependency. Phase 6 may
+consume state through a separate fusion boundary; Phase 5 cannot change an
+order, fill, P&L, or strategy decision.
 
 ## Phase 0 scope
 
