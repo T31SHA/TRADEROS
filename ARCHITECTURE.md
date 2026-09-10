@@ -89,10 +89,28 @@ tested with SQLite; `InMemoryMarketDataStore` is for deterministic offline
 tests. Raw and adjusted data are distinct through `adjustment_policy` and the
 database uniqueness key includes that policy.
 
+Phase 2 adds the leakage-safe feature path:
+
+```text
+validated MarketBar sequence → FeatureRegistry/FeatureContext
+→ causal feature computation → FeatureObservation + lineage
+→ FeatureSet validation → FeatureStore boundary
+```
+
+Feature code consumes only canonical bars. It uses the Phase 1 bar-start
+timestamp convention and records separate observation, availability, and
+decision timestamps. Current-bar descriptive features may use the completed
+current bar; breakout thresholds use only the prior completed window. Raw and
+adjusted bars cannot be mixed in a feature context. Phase 2 intentionally has
+no resampling, label generation, strategy, model, execution, or live-trading
+dependency.
+
 ## Phase 0 scope
 
 Phase 0 established policy, package boundaries, configuration, logging, and
 quality gates. Phase 1 adds the market-data domain, deterministic local provider,
-ingestion, quality, lineage, storage adapters, and PostgreSQL migration. It
-still does not include Redis, a real external provider, broker, strategy,
-backtester, API server, dashboard, or live credential.
+ingestion, quality, lineage, storage adapters, and PostgreSQL migration. Phase 2
+adds deterministic feature definitions, indicators, feature lineage, causal
+availability metadata, validation, and an in-memory storage boundary. It still
+does not include Redis, a real external provider, broker, strategy, backtester,
+API server, dashboard, model training, or live credential.

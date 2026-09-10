@@ -26,6 +26,14 @@ provider provenance are required for reproducibility.
 No feature pipeline may use future observations. Leakage and look-ahead tests are
 blocking tests for any phase that introduces derived data.
 
+Phase 2 implements this policy with causal feature definitions. Features use
+ordered validated bar prefixes only; a feature on a bar-start timestamp is not
+available until the bar's timeframe duration has elapsed. Feature observations
+retain separate observation, availability, and decision timestamps, dataset
+version, and raw/adjusted policy. Current-bar breakout thresholds are always
+derived from the prior completed window. Warm-up rows remain explicit nulls;
+missing rows are never forward-filled or synthesized.
+
 ## Credentials and providers
 
 Providers are accessed through interfaces and adapters. Credentials come only

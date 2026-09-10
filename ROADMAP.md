@@ -11,10 +11,11 @@ Provider interfaces, UTC-normalized market-data models, validation, storage,
 retrieval, calendars, lineage, and data-quality tests. Redis caching remains
 deferred until a measured use case exists.
 
-## Phase 2 — Feature engine
+## Phase 2 — Feature engine — complete
 
-Leakage-safe returns, momentum, volatility, ATR, trend, and breakout features
-with explicit timestamp tests.
+Leakage-safe versioned returns, momentum, moving averages, volatility, ATR,
+range, breakout, RSI, equity volume features, explicit availability timestamps,
+lineage, storage boundary, and future-data invariance tests.
 
 ## Phase 3 — Backtesting
 
