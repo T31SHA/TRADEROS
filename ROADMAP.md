@@ -17,10 +17,12 @@ Leakage-safe versioned returns, momentum, moving averages, volatility, ATR,
 range, breakout, RSI, equity volume features, explicit availability timestamps,
 lineage, storage boundary, and future-data invariance tests.
 
-## Phase 3 — Backtesting
+## Phase 3 — Backtesting — complete
 
-Reproducible event-driven orders/fills, costs, slippage, latency assumptions,
-portfolio simulation, and performance metrics.
+Offline, reproducible event-driven orders/fills, explicit next-bar timing,
+market/limit/stop execution, costs, spread, slippage, Decimal portfolio and FX
+accounting, trade ledger, equity curve, experiment identity, and performance
+metrics. Risk-firewall integration and live/paper execution remain later work.
 
 ## Phase 4 — Strategies
 
