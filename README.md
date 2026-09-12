@@ -7,7 +7,9 @@ does not treat an LLM as a trading authority.
 
 ## Status
 
-Phase 8 — durable paper trading — is complete. The
+Phase 9 — research validation framework — is complete, but the current
+baseline empirical decision is **INVALID / not evaluable** because the
+repository has no versioned historical market dataset. The
 repository contains the Phase 1 data foundation, Phase 2 leakage-safe feature
 engine, Phase 3 event-driven backtester, and four deterministic Phase 4
 baselines: Forex trend, Forex breakout, equity momentum, and equity breakout.
@@ -19,6 +21,13 @@ auditable veto or bounded quantity-free authorization. Neither sizes nor
 executes a trade. These components are not validated production edges. Brokers,
 paper orders now require a Phase 7 approval and use an offline, durable
 SQLAlchemy paper engine. Live execution remains intentionally unimplemented.
+
+The Phase 9 framework locks temporal OOS evaluation from candidate selection,
+records immutable dataset/experiment/result lineage, reuses the Phase 3 causal
+backtester, and provides cost stress plus dependence-aware uncertainty helpers.
+It does not claim a trading edge. See
+[`docs/RESEARCH_VALIDATION.md`](docs/RESEARCH_VALIDATION.md) for the evidence
+inventory and required data-validation gate.
 
 ## Safety defaults
 

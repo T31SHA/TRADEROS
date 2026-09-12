@@ -210,6 +210,25 @@ emergency, and system-health locks prevent new risk after restart, while a
 Phase 7 reduction-only authorization remains bounded. FX conversion, margin,
 and live execution are intentionally deferred.
 
+Phase 9 adds a research-only validation boundary:
+
+```text
+immutable DatasetManifest + temporal ResearchSplit
+→ development/walk-forward ExperimentSpec
+→ frozen configuration
+→ non-selection-eligible locked OOS ExperimentSpec
+→ immutable result hash + filesystem registry → human evidence review
+```
+
+`traderos.research` validates lineage before reusing the Phase 3 backtester; it
+does not create an alternate execution/accounting path. Locked OOS is never a
+selection scope, and contamination is explicit in `ExperimentResult`. Moving
+block bootstrap and conservative multiple-testing adjustment helpers support
+review but never automatically promote a candidate. Research has no dependency
+on paper state, brokers, credentials, networks, or live trading. The current
+repository contains no versioned historical dataset, so Phase 9 includes no
+empirical performance or survival claim.
+
 ## Phase 0 scope
 
 Phase 0 established policy, package boundaries, configuration, logging, and

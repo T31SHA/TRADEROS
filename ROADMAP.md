@@ -63,10 +63,15 @@ Offline durable account, sizing, orders, fills, reservations, locks, recovery,
 and audit trail. Every paper order consumes a Phase 7 risk decision; no broker
 or network adapter is implemented.
 
-## Phase 9 — Research and learning
+## Phase 9 — Research and validation — complete (empirical decision invalid)
 
-Experiment registry, validation gates, model/strategy versions, attribution,
-degradation analysis, and proposal-only research assistance.
+Immutable dataset/experiment/result lineage, chronological development and
+walk-forward controls, locked-OOS protection, cost stress, statistical
+uncertainty helpers, and evidence classification are implemented. No versioned
+historical market dataset is present in the repository, so the four baseline
+strategies have not been empirically evaluated and are INVALID / not evaluable;
+this is not a profitability claim or a strategy kill decision. See
+`docs/RESEARCH_VALIDATION.md`.
 
 ## Phase 10 — Dashboard
 

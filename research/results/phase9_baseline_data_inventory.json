@@ -1,0 +1,36 @@
+{
+  "schema_version": "phase9-baseline-data-inventory.v1",
+  "decision": "invalid",
+  "reason": "No versioned historical MarketBar dataset is committed or configured for a reproducible Phase 9 evaluation.",
+  "dataset_inventory": [],
+  "locked_out_of_sample": {
+    "status": "unavailable",
+    "reason": "A temporal boundary cannot be selected without an actual immutable dataset range."
+  },
+  "strategies": [
+    {
+      "strategy_id": "forex_trend_following",
+      "strategy_version": "1",
+      "decision": "invalid",
+      "reason": "No eligible historical dataset"
+    },
+    {
+      "strategy_id": "forex_breakout",
+      "strategy_version": "1",
+      "decision": "invalid",
+      "reason": "No eligible historical dataset"
+    },
+    {
+      "strategy_id": "equity_momentum",
+      "strategy_version": "1",
+      "decision": "invalid",
+      "reason": "No eligible historical dataset"
+    },
+    {
+      "strategy_id": "equity_breakout",
+      "strategy_version": "1",
+      "decision": "invalid",
+      "reason": "No eligible historical dataset"
+    }
+  ]
+}
