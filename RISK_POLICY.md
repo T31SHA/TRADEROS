@@ -46,9 +46,9 @@ deferred.
 
 ## Phase 8 durable risk state
 
-Phase 8 consumes only an approved immutable `RiskDecision` whose policy and
-configuration identity matches the paper account. Its account transaction
-atomically creates an order, risk reservation, and audit evidence. Reservations
+Phase 8 consumes only an approved immutable `RiskDecision` whose account,
+policy, and configuration identity matches the paper account. Its account
+transaction atomically creates an order, risk reservation, and audit evidence. Reservations
 prevent concurrent risk-increasing orders from consuming the same account risk
 capacity. Daily-loss and high-water-mark drawdown breaches create persisted UTC
 locks; restart does not clear them. Active locks reject new/increased risk and

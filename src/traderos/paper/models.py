@@ -366,6 +366,7 @@ def quantity_for_authorization(
     reserved_risk: Decimal,
     reserved_cash: Decimal,
     config: PaperExecutionConfig,
+    current_gross_exposure: Decimal = Decimal("0"),
 ) -> SizingResult:
     """Size only inside immutable Phase 7 bounds; this never mutates state."""
 
@@ -382,11 +383,16 @@ def quantity_for_authorization(
         raise PaperTradingError("reserved risk is invalid")
     if not reserved_cash.is_finite() or reserved_cash < 0:
         raise PaperTradingError("reserved cash is invalid")
+    if not current_gross_exposure.is_finite() or current_gross_exposure < 0:
+        raise PaperTradingError("current gross exposure is invalid")
     price = quote.ask if decision.direction.value == "long" else quote.bid
     _finite_positive(price, "sizing price")
     authorization = decision.authorization
     if authorization.action is RiskAction.NEW_OR_INCREASE:
-        available = min(authorization.max_new_notional, account.risk_capacity - reserved_risk)
+        available = min(
+            authorization.max_new_notional,
+            account.risk_capacity - reserved_risk - current_gross_exposure,
+        )
         if available <= 0:
             raise PaperTradingError("no durable risk capacity remains")
         if decision.direction.value == "long":

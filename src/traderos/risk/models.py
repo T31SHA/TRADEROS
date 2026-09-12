@@ -136,6 +136,7 @@ class PortfolioRiskSnapshot:
     """
 
     timestamp: datetime
+    account_id: str
     account_currency: str
     risk_day: date
     equity: Decimal | None
@@ -151,8 +152,8 @@ class PortfolioRiskSnapshot:
 
     def __post_init__(self) -> None:
         require_utc(self.timestamp)
-        if not self.account_currency.strip():
-            raise ValueError("risk snapshot account currency must not be blank")
+        if not self.account_id.strip() or not self.account_currency.strip():
+            raise ValueError("risk snapshot account identity and currency must not be blank")
         if self.pending_intent_count < 0:
             raise ValueError("pending intent count must be non-negative")
         symbols = [item.instrument.canonical_symbol for item in self.positions]
@@ -232,6 +233,7 @@ class RiskDecision:
     status: RiskDecisionStatus
     decision_timestamp: datetime
     intent_id: str
+    account_id: str | None
     instrument: Instrument
     direction: FusionDirection
     policy_id: str
@@ -258,9 +260,18 @@ class RiskDecision:
         ):
             raise ValueError("risk decision identity fields must not be blank")
         if self.status is RiskDecisionStatus.APPROVE:
-            if self.reason_codes or self.authorization is None:
+            if (
+                self.reason_codes
+                or self.authorization is None
+                or self.account_id is None
+                or not self.account_id.strip()
+            ):
                 raise ValueError("approved risk decisions require bounds and no failure reasons")
-        elif self.authorization is not None or not self.reason_codes:
+        elif (
+            self.authorization is not None
+            or not self.reason_codes
+            or (self.account_id is not None and not self.account_id.strip())
+        ):
             raise ValueError("rejected risk decisions require reasons and no authorization")
 
 
@@ -274,16 +285,94 @@ def deterministic_risk_decision_id(
     checks: tuple[RiskCheckResult, ...],
     authorization: RiskAuthorization | None,
 ) -> str:
-    """Create a stable identity from the decision inputs and resulting checks."""
+    """Create a stable identity from the firewall inputs and resulting checks."""
+
+    reasons = tuple(item.reason_code for item in checks if item.reason_code is not None)
+    return _risk_decision_id(
+        intent_id=context.intent.intent_id,
+        account_id=context.portfolio.account_id if context.portfolio else None,
+        instrument=context.intent.instrument,
+        direction=context.intent.direction,
+        decision_timestamp=context.decision_timestamp,
+        policy_id=policy_id,
+        policy_version=policy_version,
+        configuration_id=configuration_id,
+        status=status,
+        reason_codes=reasons,
+        checks=checks,
+        authorization=authorization,
+        regime_state_id=context.regime_state.state_id if context.regime_state else None,
+        portfolio_snapshot_timestamp=(context.portfolio.timestamp if context.portfolio else None),
+        market_snapshot_timestamp=context.market.timestamp if context.market else None,
+    )
+
+
+def risk_decision_integrity_id(decision: RiskDecision) -> str:
+    """Recompute a decision's tamper-evident deterministic identity.
+
+    Phase 8 uses this before consuming an authorization.  It detects mutation
+    through ``dataclasses.replace`` or a deserialization boundary without
+    introducing hidden state into the pure Phase 7 evaluator.
+    """
+
+    return _risk_decision_id(
+        intent_id=decision.intent_id,
+        account_id=decision.account_id,
+        instrument=decision.instrument,
+        direction=decision.direction,
+        decision_timestamp=decision.decision_timestamp,
+        policy_id=decision.policy_id,
+        policy_version=decision.policy_version,
+        configuration_id=decision.configuration_id,
+        status=decision.status,
+        reason_codes=decision.reason_codes,
+        checks=decision.checks,
+        authorization=decision.authorization,
+        regime_state_id=decision.regime_state_id,
+        portfolio_snapshot_timestamp=decision.portfolio_snapshot_timestamp,
+        market_snapshot_timestamp=decision.market_snapshot_timestamp,
+    )
+
+
+def _risk_decision_id(
+    *,
+    intent_id: str,
+    account_id: str | None,
+    instrument: Instrument,
+    direction: FusionDirection,
+    decision_timestamp: datetime,
+    policy_id: str,
+    policy_version: str,
+    configuration_id: str,
+    status: RiskDecisionStatus,
+    reason_codes: tuple[RiskReasonCode, ...],
+    checks: tuple[RiskCheckResult, ...],
+    authorization: RiskAuthorization | None,
+    regime_state_id: str | None,
+    portfolio_snapshot_timestamp: datetime | None,
+    market_snapshot_timestamp: datetime | None,
+) -> str:
+    """Hash every persisted authorization field that Phase 8 consumes."""
 
     payload = {
-        "intent_id": context.intent.intent_id,
-        "symbol": context.intent.instrument.canonical_symbol,
-        "decision_timestamp": context.decision_timestamp.isoformat(),
+        "intent_id": intent_id,
+        "account_id": account_id,
+        "symbol": instrument.canonical_symbol,
+        "asset_class": instrument.asset_class.value,
+        "direction": direction.value,
+        "decision_timestamp": decision_timestamp.isoformat(),
         "policy_id": policy_id,
         "policy_version": policy_version,
         "configuration_id": configuration_id,
         "status": status.value,
+        "reason_codes": [item.value for item in reason_codes],
+        "regime_state_id": regime_state_id,
+        "portfolio_snapshot_timestamp": (
+            portfolio_snapshot_timestamp.isoformat() if portfolio_snapshot_timestamp else None
+        ),
+        "market_snapshot_timestamp": (
+            market_snapshot_timestamp.isoformat() if market_snapshot_timestamp else None
+        ),
         "checks": [
             (
                 item.check_id,
@@ -325,4 +414,5 @@ __all__ = [
     "SystemHealthSnapshot",
     "SystemHealthStatus",
     "deterministic_risk_decision_id",
+    "risk_decision_integrity_id",
 ]

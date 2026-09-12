@@ -25,7 +25,12 @@ from traderos.paper.models import (
     quantity_for_authorization,
 )
 from traderos.paper.store import SqlAlchemyPaperStore
-from traderos.risk.models import RiskAction, RiskDecision, RiskDecisionStatus
+from traderos.risk.models import (
+    RiskAction,
+    RiskDecision,
+    RiskDecisionStatus,
+    risk_decision_integrity_id,
+)
 
 
 class PaperTradingEngine:
@@ -97,7 +102,7 @@ class PaperTradingEngine:
         require_utc(timestamp)
         if not idempotency_key.strip():
             raise PaperTradingError("idempotency key must not be blank")
-        self._validate_decision(risk_decision, quote, timestamp)
+        self._validate_decision(risk_decision, quote, timestamp, account_id)
         if expires_at is not None:
             require_utc(expires_at)
             if expires_at <= timestamp:
@@ -133,6 +138,7 @@ class PaperTradingEngine:
                     reserved_risk=self.store.active_reservation_total(connection, account_id),
                     reserved_cash=self.store.active_reserved_cash_total(connection, account_id),
                     config=self.config,
+                    current_gross_exposure=self._gross_exposure(connection, account_id),
                 )
                 side = OrderSide.BUY if risk_decision.direction.value == "long" else OrderSide.SELL
                 if risk_decision.authorization is None:
@@ -383,8 +389,10 @@ class PaperTradingEngine:
             raise PaperTradingError("invalid position projection")
 
     def _validate_decision(
-        self, decision: RiskDecision, quote: PaperQuote, timestamp: datetime
+        self, decision: RiskDecision, quote: PaperQuote, timestamp: datetime, account_id: str
     ) -> None:
+        if decision.decision_id != risk_decision_integrity_id(decision):
+            raise PaperTradingError("risk decision authorization integrity check failed")
         if decision.status is not RiskDecisionStatus.APPROVE or decision.authorization is None:
             raise PaperTradingError("paper orders require an approved risk decision")
         require_utc(decision.decision_timestamp)
@@ -396,6 +404,8 @@ class PaperTradingEngine:
             raise PaperTradingError("quote is stale")
         if decision.instrument != quote.instrument:
             raise PaperTradingError("risk decision instrument does not match quote")
+        if decision.account_id != account_id:
+            raise PaperTradingError("risk decision account does not match paper account")
         if decision.direction.value not in {"long", "short"}:
             raise PaperTradingError("risk decision direction is not executable")
 
@@ -497,6 +507,17 @@ class PaperTradingEngine:
         projected[override.instrument.canonical_symbol] = override
         return cash + sum(
             (item.quantity * item.market_price for item in projected.values()), Decimal("0")
+        )
+
+    def _gross_exposure(self, connection: Connection, account_id: str) -> Decimal:
+        """Return durable marked gross notional used by the reservation boundary."""
+
+        return sum(
+            (
+                abs(position.quantity * position.market_price)
+                for position in self.store.transaction_positions(connection, account_id)
+            ),
+            Decimal("0"),
         )
 
     def _roll_risk_day_if_needed(

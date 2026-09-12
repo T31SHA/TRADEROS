@@ -17,6 +17,7 @@ from traderos.risk.models import (
     RiskReasonCode,
     SystemHealthSnapshot,
     SystemHealthStatus,
+    risk_decision_integrity_id,
 )
 from traderos.risk.policy import RiskFirewallParameters, risk_configuration_identity
 
@@ -41,4 +42,5 @@ __all__ = [
     "SystemHealthSnapshot",
     "SystemHealthStatus",
     "risk_configuration_identity",
+    "risk_decision_integrity_id",
 ]

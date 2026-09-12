@@ -128,6 +128,7 @@ def parameters(**changes: object) -> RiskFirewallParameters:
 def portfolio(**changes: object) -> PortfolioRiskSnapshot:
     values: dict[str, object] = {
         "timestamp": BASE,
+        "account_id": "risk-test-account",
         "account_currency": "USD",
         "risk_day": date(2024, 1, 2),
         "equity": Decimal("10000"),

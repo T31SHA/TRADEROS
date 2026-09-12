@@ -439,6 +439,28 @@ class SqlAlchemyPaperStore:
         return tuple(self._to_order(row) for row in rows)
 
     def update_order(self, connection: Connection, order: PaperOrder, timestamp: datetime) -> None:
+        current = self.locked_order(connection, order.account_id, order.order_id)
+        if not current.can_transition_to(order.status):
+            raise PaperTradingError(
+                f"invalid durable order transition {current.status.value} → {order.status.value}"
+            )
+        if (
+            order.instrument != current.instrument
+            or order.side is not current.side
+            or order.order_type is not current.order_type
+            or order.quantity != current.quantity
+            or order.risk_decision_id != current.risk_decision_id
+            or order.source_intent_id != current.source_intent_id
+        ):
+            raise PaperTradingError("order transition cannot alter immutable order authorization")
+        if order.filled_quantity < current.filled_quantity:
+            raise PaperTradingError("order filled quantity cannot decrease")
+        if order.status in {PaperOrderStatus.PARTIALLY_FILLED, PaperOrderStatus.FILLED} and (
+            order.filled_quantity <= current.filled_quantity
+        ):
+            raise PaperTradingError("fill transition requires newly filled quantity")
+        if order.status is PaperOrderStatus.FILLED and order.filled_quantity != order.quantity:
+            raise PaperTradingError("filled order must have no remaining quantity")
         connection.execute(
             update(paper_orders)
             .where(paper_orders.c.order_id == order.order_id)
@@ -456,6 +478,7 @@ class SqlAlchemyPaperStore:
             "order_transition",
             timestamp,
             order=order,
+            previous_state=current.status,
             new_state=order.status,
         )
 

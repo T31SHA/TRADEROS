@@ -74,6 +74,7 @@ def test_strategy_signal_regime_fusion_and_firewall_preserve_the_safety_boundary
             ),
             portfolio=PortfolioRiskSnapshot(
                 timestamp=timestamp,
+                account_id="pipeline-account",
                 account_currency="USD",
                 risk_day=date(2024, 1, 2),
                 equity=Decimal("10000"),
@@ -88,6 +89,7 @@ def test_strategy_signal_regime_fusion_and_firewall_preserve_the_safety_boundary
     )
     assert decision.status is RiskDecisionStatus.APPROVE
     assert decision.authorization is not None
+    assert decision.account_id == "pipeline-account"
     assert decision.authorization.require_pretrade_sizing
     assert "quantity" not in decision.__dataclass_fields__
     assert timestamp + timedelta(hours=1) > decision.decision_timestamp

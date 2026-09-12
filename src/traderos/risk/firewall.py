@@ -576,6 +576,7 @@ class RiskFirewall:
             status=status,
             decision_timestamp=context.decision_timestamp,
             intent_id=context.intent.intent_id,
+            account_id=context.portfolio.account_id if context.portfolio else None,
             instrument=context.intent.instrument,
             direction=context.intent.direction,
             policy_id=self.policy_id,

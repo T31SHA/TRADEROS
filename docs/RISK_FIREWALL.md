@@ -36,12 +36,14 @@ stale inputs reject. There is no wall-clock access, cache, network call,
 forward-fill, or hidden historical state.
 
 The portfolio snapshot is deliberately narrow, and is not a second portfolio
-engine. It contains account-currency values, signed account-currency position
-notionals, UTC `risk_day`, daily P&L, high-water mark, active persisted locks,
-and reserved intent IDs. `daily_pnl` is supplied as realized plus unrealized
-P&L and applicable costs since the beginning of `risk_day` at 00:00 UTC. The
-snapshot's `risk_day` must equal the UTC decision date; market-session-specific
-reset rules are not invented here.
+engine. It contains the authoritative account identity, account-currency
+values, signed account-currency position notionals, UTC `risk_day`, daily P&L,
+high-water mark, active persisted locks, and reserved intent IDs. Approved
+decisions retain that account identity, so a downstream paper account cannot
+consume an authorization evaluated for another account. `daily_pnl` is supplied
+as realized plus unrealized P&L and applicable costs since the beginning of
+`risk_day` at 00:00 UTC. The snapshot's `risk_day` must equal the UTC decision
+date; market-session-specific reset rules are not invented here.
 
 ## Fail-closed controls
 

@@ -1,12 +1,13 @@
 """Phase 8 durable paper-engine safety and recovery integration tests."""
 
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
-from traderos.backtesting.models import OrderType
+from traderos.backtesting.models import OrderType, TimeInForce
 from traderos.data.instruments import AssetClass, Instrument
 from traderos.database.connection import create_database_engine
 from traderos.paper import (
@@ -23,6 +24,7 @@ from traderos.risk import (
     RiskAuthorization,
     RiskDecision,
     RiskDecisionStatus,
+    risk_decision_integrity_id,
 )
 from traderos.signals import FusionDirection
 
@@ -40,16 +42,23 @@ def instrument() -> Instrument:
 
 
 def decision(
-    identifier: str = "decision-1", status: RiskDecisionStatus = RiskDecisionStatus.APPROVE
+    identifier: str = "decision-1",
+    status: RiskDecisionStatus = RiskDecisionStatus.APPROVE,
+    *,
+    timestamp: datetime = NOW,
+    direction: FusionDirection = FusionDirection.LONG,
+    action: RiskAction = RiskAction.NEW_OR_INCREASE,
+    max_new_notional: Decimal = Decimal("1000"),
 ) -> RiskDecision:
     approved = status is RiskDecisionStatus.APPROVE
-    return RiskDecision(
+    value = RiskDecision(
         decision_id=identifier,
         status=status,
-        decision_timestamp=NOW,
+        decision_timestamp=timestamp,
         intent_id=f"intent-{identifier}",
+        account_id="paper-1",
         instrument=instrument(),
-        direction=FusionDirection.LONG,
+        direction=direction,
         policy_id="risk_firewall",
         policy_version="1",
         configuration_id="policy-config",
@@ -57,18 +66,25 @@ def decision(
         checks=(),
         authorization=(
             RiskAuthorization(
-                action=RiskAction.NEW_OR_INCREASE,
-                max_new_notional=Decimal("1000"),
-                max_loss_at_stop=Decimal("100"),
-                max_reduction_notional=Decimal("0"),
+                action=action,
+                max_new_notional=max_new_notional
+                if action is RiskAction.NEW_OR_INCREASE
+                else Decimal("0"),
+                max_loss_at_stop=Decimal("100")
+                if action is RiskAction.NEW_OR_INCREASE
+                else Decimal("0"),
+                max_reduction_notional=Decimal("1000")
+                if action is RiskAction.REDUCTION_ONLY
+                else Decimal("0"),
             )
             if approved
             else None
         ),
         regime_state_id="state-1",
-        portfolio_snapshot_timestamp=NOW,
-        market_snapshot_timestamp=NOW,
+        portfolio_snapshot_timestamp=timestamp,
+        market_snapshot_timestamp=timestamp,
     )
+    return replace(value, decision_id=risk_decision_integrity_id(value))
 
 
 @pytest.fixture
@@ -178,6 +194,29 @@ def test_second_decision_cannot_consume_an_already_reserved_risk_capacity(
         )
 
 
+def test_replayed_risk_decision_has_one_durable_economic_effect(
+    engine: PaperTradingEngine,
+) -> None:
+    approved = decision("replayed-decision", max_new_notional=Decimal("500"))
+    first = engine.submit(
+        account_id="paper-1",
+        idempotency_key="first-consumption",
+        risk_decision=approved,
+        quote=quote(),
+        timestamp=NOW,
+    )
+    with pytest.raises(PaperTradingError, match="uniqueness conflict"):
+        engine.submit(
+            account_id="paper-1",
+            idempotency_key="replayed-consumption",
+            risk_decision=approved,
+            quote=quote(),
+            timestamp=NOW,
+        )
+    assert engine.store.orders("paper-1") == (first,)
+    assert engine.store.active_reservation_total_for_account("paper-1") > Decimal("0")
+
+
 def test_limit_order_waits_for_touch_and_fill_is_not_replayable(engine: PaperTradingEngine) -> None:
     order = engine.submit(
         account_id="paper-1",
@@ -205,3 +244,126 @@ def test_limit_order_waits_for_touch_and_fill_is_not_replayable(engine: PaperTra
         engine.process_quote(account_id="paper-1", quote=touched, timestamp=touched.timestamp) == ()
     )
     assert engine.store.order("paper-1", order.order_id).filled_quantity == Decimal("4")
+
+
+def test_partial_fills_conserve_quantity_then_release_reservation(
+    engine: PaperTradingEngine,
+) -> None:
+    submitted = engine.submit(
+        account_id="paper-1",
+        idempotency_key="complete",
+        risk_decision=decision("complete"),
+        quote=quote(),
+        timestamp=NOW,
+    )
+    for seconds in (1, 2, 3):
+        at = NOW + timedelta(seconds=seconds)
+        engine.process_quote(account_id="paper-1", quote=quote(at), timestamp=at)
+    order = engine.store.order("paper-1", submitted.order_id)
+    assert order.status is PaperOrderStatus.FILLED
+    assert order.filled_quantity + order.remaining_quantity == order.quantity
+    assert order.remaining_quantity == Decimal("0")
+    assert engine.store.account("paper-1").reserved_risk == Decimal("0")
+    with pytest.raises(PaperTradingError, match="risk capacity"):
+        engine.submit(
+            account_id="paper-1",
+            idempotency_key="exposure-after-fill",
+            risk_decision=decision("exposure-after-fill", max_new_notional=Decimal("100")),
+            quote=quote(NOW + timedelta(seconds=3)),
+            timestamp=NOW + timedelta(seconds=3),
+        )
+    with pytest.raises(PaperTradingError, match="only open"):
+        engine.cancel(
+            account_id="paper-1",
+            order_id=order.order_id,
+            timestamp=NOW + timedelta(seconds=4),
+            reason="late",
+        )
+
+
+def test_stop_ioc_expiration_and_stale_quote_fail_closed(engine: PaperTradingEngine) -> None:
+    stop = engine.submit(
+        account_id="paper-1",
+        idempotency_key="stop",
+        risk_decision=decision("stop", max_new_notional=Decimal("500")),
+        quote=quote(),
+        timestamp=NOW,
+        order_type=OrderType.STOP,
+        stop_price=Decimal("102"),
+    )
+    at = NOW + timedelta(seconds=1)
+    assert engine.process_quote(account_id="paper-1", quote=quote(at), timestamp=at) == ()
+    triggered = PaperQuote(instrument(), at + timedelta(seconds=1), Decimal("101"), Decimal("102"))
+    assert (
+        len(
+            engine.process_quote(
+                account_id="paper-1", quote=triggered, timestamp=triggered.timestamp
+            )
+        )
+        == 1
+    )
+    assert engine.store.order("paper-1", stop.order_id).status is PaperOrderStatus.PARTIALLY_FILLED
+
+    ioc = engine.submit(
+        account_id="paper-1",
+        idempotency_key="ioc",
+        risk_decision=decision("ioc", timestamp=triggered.timestamp),
+        quote=triggered,
+        timestamp=triggered.timestamp,
+        order_type=OrderType.LIMIT,
+        limit_price=Decimal("100"),
+        time_in_force=TimeInForce.IOC,
+    )
+    later = triggered.timestamp + timedelta(seconds=1)
+    assert engine.process_quote(account_id="paper-1", quote=quote(later), timestamp=later) == ()
+    assert engine.store.order("paper-1", ioc.order_id).status is PaperOrderStatus.EXPIRED
+    assert engine.store.account("paper-1").reserved_risk > Decimal("0")
+    with pytest.raises(PaperTradingError, match="future-dated or stale"):
+        engine.process_quote(
+            account_id="paper-1", quote=quote(NOW + timedelta(minutes=2)), timestamp=NOW
+        )
+
+
+def test_submission_mutation_and_fill_cash_failures_are_rejected(
+    engine: PaperTradingEngine,
+) -> None:
+    first = engine.submit(
+        account_id="paper-1",
+        idempotency_key="same",
+        risk_decision=decision("same"),
+        quote=quote(),
+        timestamp=NOW,
+    )
+    with pytest.raises(PaperTradingError, match="idempotency"):
+        engine.submit(
+            account_id="paper-1",
+            idempotency_key="same",
+            risk_decision=decision("other"),
+            quote=quote(),
+            timestamp=NOW,
+        )
+    with pytest.raises(PaperTradingError, match="expiration"):
+        engine.submit(
+            account_id="paper-1",
+            idempotency_key="expired",
+            risk_decision=decision("expired"),
+            quote=quote(),
+            timestamp=NOW,
+            expires_at=NOW,
+        )
+    with pytest.raises(PaperTradingError, match="integrity"):
+        engine.submit(
+            account_id="paper-1",
+            idempotency_key="wrong-policy",
+            risk_decision=replace(decision("wrong-policy"), configuration_id="different"),
+            quote=quote(),
+            timestamp=NOW,
+        )
+    engine.config = PaperExecutionConfig(
+        max_fill_quantity=Decimal("4"), slippage_absolute=Decimal("3000")
+    )
+    at = NOW + timedelta(seconds=1)
+    assert engine.process_quote(account_id="paper-1", quote=quote(at), timestamp=at) == ()
+    rejected = engine.store.order("paper-1", first.order_id)
+    assert rejected.status is PaperOrderStatus.REJECTED
+    assert engine.store.account("paper-1").reserved_risk == Decimal("0")

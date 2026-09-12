@@ -253,6 +253,22 @@ paper_orders = Table(
         "quantity > 0 AND filled_quantity >= 0 AND filled_quantity <= quantity",
         name="ck_paper_order_quantity",
     ),
+    CheckConstraint(
+        "side IN ('buy', 'sell') AND order_type IN ('market', 'limit', 'stop') "
+        "AND time_in_force IN ('gtc', 'day', 'ioc')",
+        name="ck_paper_order_values",
+    ),
+    CheckConstraint(
+        "status IN ('created', 'submitted', 'accepted', 'partially_filled', 'filled', "
+        "'cancel_requested', 'cancelled', 'rejected', 'expired')",
+        name="ck_paper_order_status",
+    ),
+    CheckConstraint(
+        "(order_type = 'limit' AND limit_price > 0 AND stop_price IS NULL) OR "
+        "(order_type = 'stop' AND stop_price > 0 AND limit_price IS NULL) OR "
+        "(order_type = 'market' AND limit_price IS NULL AND stop_price IS NULL)",
+        name="ck_paper_order_prices",
+    ),
 )
 Index(
     "ix_paper_orders_open",
@@ -314,6 +330,10 @@ paper_risk_locks = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("cleared_at", DateTime(timezone=True)),
     UniqueConstraint("account_id", "lock_type", "active", name="uq_paper_active_lock_type"),
+    CheckConstraint(
+        "lock_type IN ('daily_loss_lock', 'drawdown_lock', 'emergency_lock', 'system_health_lock')",
+        name="ck_paper_risk_lock_type",
+    ),
 )
 
 paper_audit_events = Table(

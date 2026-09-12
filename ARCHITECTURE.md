@@ -195,8 +195,9 @@ approved immutable RiskDecision → Decimal sizing → PaperOrder + reservation
 ```
 
 `traderos.paper.PaperTradingEngine` is the sole quantity-bearing order path.
-It accepts neither a `UnifiedTradeIntent` nor caller-created orders/fills. Its
-SQLAlchemy store uses the account row as the transaction lock point and commits
+It accepts neither a `UnifiedTradeIntent` nor caller-created orders/fills, and
+consumes an approval only for the account identified by its Phase 7 portfolio
+snapshot. Its SQLAlchemy store uses the account row as the transaction lock point and commits
 order/reservation/audit together, then fill/portfolio projection/audit together.
 The append-only fill/audit ledger supports recovery and reconciliation. It
 reuses Phase 3's signed-position, Decimal, spread/slippage/commission concepts
