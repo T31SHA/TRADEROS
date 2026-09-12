@@ -10,6 +10,12 @@ and application-managed schema creation.
 The bar identity includes `symbol`, `timeframe`, `timestamp`, `source_id`, and
 `adjustment_policy`, so raw and adjusted observations cannot silently collide.
 
+Phase 8 adds `002_paper_trading.sql`. It creates durable, PostgreSQL-authoritative
+paper accounts, projections, orders, fills, reservations, risk locks, and
+append-only audit records. Paper order/reservation creation and fill/projection
+updates are each one database transaction; no migration contains a broker URL,
+credential, or live execution capability.
+
 Manual schema edits are not an accepted deployment path. A migration runner
 must apply this file in deployment automation before a PostgreSQL store is
 used.

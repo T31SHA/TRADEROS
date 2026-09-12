@@ -57,9 +57,11 @@ only auditable bounded quantity-free risk authorizations or vetoes; portfolio
 sizing, persistent reservations/locks, paper trading, and execution remain
 later phases.
 
-## Phase 8 — Paper trading
+## Phase 8 — Paper trading — complete
 
-The same signal → risk → portfolio → execution path using a paper adapter.
+Offline durable account, sizing, orders, fills, reservations, locks, recovery,
+and audit trail. Every paper order consumes a Phase 7 risk decision; no broker
+or network adapter is implemented.
 
 ## Phase 9 — Research and learning
 

@@ -44,6 +44,16 @@ returned bounds before creating an order. Broker-specific margin, correlation
 groups, strategy attribution, sizing, paper trading, and live execution remain
 deferred.
 
+## Phase 8 durable risk state
+
+Phase 8 consumes only an approved immutable `RiskDecision` whose policy and
+configuration identity matches the paper account. Its account transaction
+atomically creates an order, risk reservation, and audit evidence. Reservations
+prevent concurrent risk-increasing orders from consuming the same account risk
+capacity. Daily-loss and high-water-mark drawdown breaches create persisted UTC
+locks; restart does not clear them. Active locks reject new/increased risk and
+only explicitly authorized Phase 7 reduction-only operations can proceed.
+
 ## Live activation
 
 Live trading is disabled by default. At minimum, both of these configuration

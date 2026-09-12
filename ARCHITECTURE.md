@@ -187,6 +187,28 @@ duplicate reservations. Unknown, stale, future-dated, invalid, or missing
 safety inputs reject. Persisting locks/reservations and creating a bounded order
 remain future portfolio/sizing responsibilities; no execution semantics change.
 
+Phase 8 adds the offline durable paper path:
+
+```text
+approved immutable RiskDecision → Decimal sizing → PaperOrder + reservation
+→ later supplied PaperQuote → PaperFill → durable account/position projection
+```
+
+`traderos.paper.PaperTradingEngine` is the sole quantity-bearing order path.
+It accepts neither a `UnifiedTradeIntent` nor caller-created orders/fills. Its
+SQLAlchemy store uses the account row as the transaction lock point and commits
+order/reservation/audit together, then fill/portfolio projection/audit together.
+The append-only fill/audit ledger supports recovery and reconciliation. It
+reuses Phase 3's signed-position, Decimal, spread/slippage/commission concepts
+without turning the historical backtester into a mutable service. Market data
+is supplied as an explicit UTC quote and cannot be fetched by the broker.
+
+The only implemented execution mode is `PAPER`; no live adapter, endpoint,
+credential, or network transport exists. Durable UTC-day loss, drawdown,
+emergency, and system-health locks prevent new risk after restart, while a
+Phase 7 reduction-only authorization remains bounded. FX conversion, margin,
+and live execution are intentionally deferred.
+
 ## Phase 0 scope
 
 Phase 0 established policy, package boundaries, configuration, logging, and

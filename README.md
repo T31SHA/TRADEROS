@@ -7,7 +7,7 @@ does not treat an LLM as a trading authority.
 
 ## Status
 
-Phase 7 — deterministic risk firewall — is complete. The
+Phase 8 — durable paper trading — is complete. The
 repository contains the Phase 1 data foundation, Phase 2 leakage-safe feature
 engine, Phase 3 event-driven backtester, and four deterministic Phase 4
 baselines: Forex trend, Forex breakout, equity momentum, and equity breakout.
@@ -17,7 +17,8 @@ majority-vote signal fusion, and a Phase 7 fail-closed risk firewall. Fusion
 creates an auditable quantity-free unified intent; the firewall returns only an
 auditable veto or bounded quantity-free authorization. Neither sizes nor
 executes a trade. These components are not validated production edges. Brokers,
-paper trading, and live execution remain intentionally unimplemented.
+paper orders now require a Phase 7 approval and use an offline, durable
+SQLAlchemy paper engine. Live execution remains intentionally unimplemented.
 
 ## Safety defaults
 
