@@ -22,6 +22,7 @@ from traderos.database.schema import (
     paper_positions,
     paper_reservations,
     paper_risk_locks,
+    paper_risk_snapshots,
 )
 from traderos.paper.models import (
     PaperAccount,
@@ -30,6 +31,7 @@ from traderos.paper.models import (
     PaperOrderStatus,
     PaperPosition,
     PaperRiskLockType,
+    PaperRiskSnapshot,
     PaperTradingError,
 )
 from traderos.risk.models import RiskAction
@@ -60,6 +62,7 @@ class SqlAlchemyPaperStore:
             with self.engine.begin() as connection:
                 connection.execute(paper_accounts.insert(), row)
                 self._audit(connection, account.account_id, "account_created", account.created_at)
+                self.record_risk_snapshot(connection, account.account_id, account.created_at)
         except IntegrityError as exc:
             raise PaperTradingError(f"paper account already exists: {account.account_id}") from exc
         except SQLAlchemyError as exc:
@@ -171,6 +174,42 @@ class SqlAlchemyPaperStore:
             )
         return frozenset(PaperRiskLockType(value) for value in values)
 
+    def latest_risk_snapshot(self, account_id: str) -> PaperRiskSnapshot:
+        """Return the latest durable view handed to the risk firewall."""
+
+        with self.engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(paper_risk_snapshots)
+                    .where(paper_risk_snapshots.c.account_id == account_id)
+                    .order_by(
+                        paper_risk_snapshots.c.timestamp.desc(),
+                        paper_risk_snapshots.c.snapshot_id.desc(),
+                    )
+                    .limit(1)
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise PaperTradingError(f"missing durable risk snapshot for account: {account_id}")
+        return self._to_risk_snapshot(row)
+
+    def risk_snapshots(self, account_id: str) -> tuple[PaperRiskSnapshot, ...]:
+        """Return append-only snapshots in deterministic event order."""
+
+        with self.engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(paper_risk_snapshots)
+                    .where(paper_risk_snapshots.c.account_id == account_id)
+                    .order_by(paper_risk_snapshots.c.timestamp, paper_risk_snapshots.c.snapshot_id)
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(self._to_risk_snapshot(row) for row in rows)
+
     def audit_events(self, account_id: str) -> tuple[dict[str, Any], ...]:
         with self.engine.connect() as connection:
             rows = (
@@ -200,6 +239,20 @@ class SqlAlchemyPaperStore:
     def active_reservation_total_for_account(self, account_id: str) -> Decimal:
         with self.engine.connect() as connection:
             return self.active_reservation_total(connection, account_id)
+
+    def active_reservation_intent_ids(self, account_id: str) -> frozenset[str]:
+        """Return durable active intent identities for the next firewall evaluation."""
+
+        with self.engine.connect() as connection:
+            values = connection.execute(
+                select(paper_reservations.c.intent_id).where(
+                    and_(
+                        paper_reservations.c.account_id == account_id,
+                        paper_reservations.c.active.is_(True),
+                    )
+                )
+            ).scalars()
+            return frozenset(values)
 
     # The methods below intentionally require a connection.  The engine owns
     # sequencing and invokes them in one DB transaction with an account row
@@ -411,6 +464,7 @@ class SqlAlchemyPaperStore:
             previous_state=PaperOrderStatus.SUBMITTED,
             new_state=PaperOrderStatus.ACCEPTED,
         )
+        self.record_risk_snapshot(connection, order.account_id, order.created_at)
 
     def locked_open_orders(
         self, connection: Connection, account_id: str, symbol: str
@@ -641,6 +695,117 @@ class SqlAlchemyPaperStore:
             )
             self._audit(connection, account_id, "risk_lock_activated", timestamp, reason=reason)
 
+    def record_risk_snapshot(
+        self, connection: Connection, account_id: str, timestamp: datetime
+    ) -> PaperRiskSnapshot:
+        """Persist a complete risk view inside the caller's account transaction.
+
+        Account, position, order, reservation, and lock records remain the
+        authoritative state.  This append-only projection makes the Phase 7
+        hand-off explicit and exposes the age of marks used in equity.
+        """
+
+        account = self.locked_account(connection, account_id)
+        positions = self.transaction_positions(connection, account_id)
+        lock_values = connection.execute(
+            select(paper_risk_locks.c.lock_type).where(
+                and_(
+                    paper_risk_locks.c.account_id == account_id,
+                    paper_risk_locks.c.active.is_(True),
+                )
+            )
+        ).scalars()
+        locks = tuple(
+            sorted((PaperRiskLockType(value) for value in lock_values), key=lambda item: item.value)
+        )
+        gross = sum((abs(item.quantity * item.market_price) for item in positions), Decimal("0"))
+        net = sum((item.quantity * item.market_price for item in positions), Decimal("0"))
+        long = sum(
+            (item.quantity * item.market_price for item in positions if item.quantity > 0),
+            Decimal("0"),
+        )
+        short = sum(
+            (-item.quantity * item.market_price for item in positions if item.quantity < 0),
+            Decimal("0"),
+        )
+        unrealized = sum((item.unrealized_pnl for item in positions), Decimal("0"))
+        equity = account.cash + net
+        pending_order_count = len(
+            connection.execute(
+                select(paper_orders.c.order_id).where(
+                    and_(
+                        paper_orders.c.account_id == account_id,
+                        paper_orders.c.status.in_(
+                            [
+                                PaperOrderStatus.ACCEPTED.value,
+                                PaperOrderStatus.PARTIALLY_FILLED.value,
+                                PaperOrderStatus.CANCEL_REQUESTED.value,
+                            ]
+                        ),
+                    )
+                )
+            ).all()
+        )
+        marked = [item.updated_at for item in positions if item.quantity != 0]
+        existing = connection.execute(
+            select(paper_risk_snapshots.c.snapshot_id).where(
+                paper_risk_snapshots.c.account_id == account_id
+            )
+        ).all()
+        snapshot = PaperRiskSnapshot(
+            snapshot_id=f"{account_id}:{len(existing) + 1:012d}",
+            account_id=account_id,
+            timestamp=timestamp,
+            cash=account.cash,
+            equity=equity,
+            used_margin=Decimal("0"),
+            available_margin=max(equity, Decimal("0")),
+            gross_exposure=gross,
+            net_exposure=net,
+            long_exposure=long,
+            short_exposure=short,
+            realized_pnl=account.realized_pnl,
+            unrealized_pnl=unrealized,
+            fees=account.fees,
+            daily_pnl=equity - account.risk_day_starting_equity,
+            high_water_mark=account.high_water_mark,
+            drawdown=max(account.high_water_mark - equity, Decimal("0")),
+            reserved_risk=account.reserved_risk,
+            pending_order_count=pending_order_count,
+            active_locks=locks,
+            mark_timestamp=min(marked) if marked else None,
+            positions=positions,
+        )
+        connection.execute(
+            paper_risk_snapshots.insert(),
+            {
+                "snapshot_id": snapshot.snapshot_id,
+                "account_id": snapshot.account_id,
+                "timestamp": snapshot.timestamp,
+                "cash": snapshot.cash,
+                "equity": snapshot.equity,
+                "used_margin": snapshot.used_margin,
+                "available_margin": snapshot.available_margin,
+                "gross_exposure": snapshot.gross_exposure,
+                "net_exposure": snapshot.net_exposure,
+                "long_exposure": snapshot.long_exposure,
+                "short_exposure": snapshot.short_exposure,
+                "realized_pnl": snapshot.realized_pnl,
+                "unrealized_pnl": snapshot.unrealized_pnl,
+                "fees": snapshot.fees,
+                "daily_pnl": snapshot.daily_pnl,
+                "high_water_mark": snapshot.high_water_mark,
+                "drawdown": snapshot.drawdown,
+                "reserved_risk": snapshot.reserved_risk,
+                "pending_order_count": snapshot.pending_order_count,
+                "active_locks": [item.value for item in snapshot.active_locks],
+                "mark_timestamp": snapshot.mark_timestamp,
+                "positions": [self._risk_position_row(item) for item in snapshot.positions],
+            },
+        )
+        self._audit(connection, account_id, "risk_snapshot_created", timestamp)
+        return snapshot
+
     def _audit(
         self,
         connection: Connection,
@@ -764,6 +929,63 @@ class SqlAlchemyPaperStore:
             unrealized_pnl=_decimal(row["unrealized_pnl"]),
             fees=_decimal(row["fees"]),
             updated_at=_utc(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _to_risk_snapshot(row: RowMapping) -> PaperRiskSnapshot:
+        return PaperRiskSnapshot(
+            snapshot_id=row["snapshot_id"],
+            account_id=row["account_id"],
+            timestamp=_utc(row["timestamp"]),
+            cash=_decimal(row["cash"]),
+            equity=_decimal(row["equity"]),
+            used_margin=_decimal(row["used_margin"]),
+            available_margin=_decimal(row["available_margin"]),
+            gross_exposure=_decimal(row["gross_exposure"]),
+            net_exposure=_decimal(row["net_exposure"]),
+            long_exposure=_decimal(row["long_exposure"]),
+            short_exposure=_decimal(row["short_exposure"]),
+            realized_pnl=_decimal(row["realized_pnl"]),
+            unrealized_pnl=_decimal(row["unrealized_pnl"]),
+            fees=_decimal(row["fees"]),
+            daily_pnl=_decimal(row["daily_pnl"]),
+            high_water_mark=_decimal(row["high_water_mark"]),
+            drawdown=_decimal(row["drawdown"]),
+            reserved_risk=_decimal(row["reserved_risk"]),
+            pending_order_count=row["pending_order_count"],
+            active_locks=tuple(PaperRiskLockType(value) for value in row["active_locks"]),
+            mark_timestamp=_utc(row["mark_timestamp"]) if row["mark_timestamp"] else None,
+            positions=tuple(
+                SqlAlchemyPaperStore._risk_position_from_row(item) for item in row["positions"]
+            ),
+        )
+
+    @staticmethod
+    def _risk_position_row(position: PaperPosition) -> dict[str, Any]:
+        return {
+            "account_id": position.account_id,
+            "instrument": position.instrument.model_dump(mode="json"),
+            "quantity": str(position.quantity),
+            "average_entry_price": str(position.average_entry_price),
+            "market_price": str(position.market_price),
+            "realized_pnl": str(position.realized_pnl),
+            "unrealized_pnl": str(position.unrealized_pnl),
+            "fees": str(position.fees),
+            "updated_at": position.updated_at.isoformat(),
+        }
+
+    @staticmethod
+    def _risk_position_from_row(row: dict[str, Any]) -> PaperPosition:
+        return PaperPosition(
+            account_id=row["account_id"],
+            instrument=Instrument(**row["instrument"]),
+            quantity=_decimal(row["quantity"]),
+            average_entry_price=_decimal(row["average_entry_price"]),
+            market_price=_decimal(row["market_price"]),
+            realized_pnl=_decimal(row["realized_pnl"]),
+            unrealized_pnl=_decimal(row["unrealized_pnl"]),
+            fees=_decimal(row["fees"]),
+            updated_at=_utc(datetime.fromisoformat(row["updated_at"])),
         )
 
     @staticmethod

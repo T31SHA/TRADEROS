@@ -10,7 +10,9 @@ from decimal import Decimal
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from traderos.backtesting.models import OrderSide, OrderType, TimeInForce
+from traderos.backtesting.errors import ExecutionPolicyError
+from traderos.backtesting.execution import adverse_execution_price, commission_amount
+from traderos.backtesting.models import CostConfig, OrderSide, OrderType, TimeInForce
 from traderos.data.time import require_utc
 from traderos.paper.models import (
     PaperAccount,
@@ -21,14 +23,18 @@ from traderos.paper.models import (
     PaperPosition,
     PaperQuote,
     PaperRiskLockType,
+    PaperRiskSnapshot,
     PaperTradingError,
     quantity_for_authorization,
 )
 from traderos.paper.store import SqlAlchemyPaperStore
 from traderos.risk.models import (
+    PortfolioRiskSnapshot,
     RiskAction,
     RiskDecision,
     RiskDecisionStatus,
+    RiskLock,
+    RiskPositionSnapshot,
     risk_decision_integrity_id,
 )
 
@@ -103,6 +109,7 @@ class PaperTradingEngine:
         if not idempotency_key.strip():
             raise PaperTradingError("idempotency key must not be blank")
         self._validate_decision(risk_decision, quote, timestamp, account_id)
+        self._validate_order_request(order_type, limit_price, stop_price)
         if expires_at is not None:
             require_utc(expires_at)
             if expires_at <= timestamp:
@@ -120,6 +127,7 @@ class PaperTradingEngine:
                         )
                     return existing
                 self._validate_account_authorization(account, risk_decision)
+                self._validate_current_portfolio_snapshot(account, risk_decision)
                 position = self.store.locked_position(
                     connection, account_id, risk_decision.instrument.canonical_symbol
                 )
@@ -141,8 +149,9 @@ class PaperTradingEngine:
                     current_gross_exposure=self._gross_exposure(connection, account_id),
                 )
                 side = OrderSide.BUY if risk_decision.direction.value == "long" else OrderSide.SELL
-                if risk_decision.authorization is None:
-                    raise PaperTradingError("missing authorization")
+                authorization = risk_decision.authorization
+                if authorization is None:
+                    raise PaperTradingError("missing authorization after decision validation")
                 order_id = self._order_id(account_id, idempotency_key, risk_decision.decision_id)
                 order = PaperOrder(
                     order_id=order_id,
@@ -166,7 +175,7 @@ class PaperTradingEngine:
                     risk_policy_configuration_id=risk_decision.configuration_id,
                     sizing_configuration_id=sized.configuration_id,
                     source_intent_id=risk_decision.intent_id,
-                    authorization_action=risk_decision.authorization.action,
+                    authorization_action=authorization.action,
                     status=PaperOrderStatus.ACCEPTED,
                 )
                 self.store.insert_order_and_reservation(
@@ -226,12 +235,14 @@ class PaperTradingEngine:
                     quantity = order.remaining_quantity
                     if self.config.max_fill_quantity is not None:
                         quantity = min(quantity, self.config.max_fill_quantity)
-                    if quantity <= 0:
-                        continue
-                    commission = max(
-                        self.config.minimum_commission,
-                        self.config.commission_per_unit * quantity
-                        + self.config.commission_rate * quantity * price,
+                    commission = commission_amount(
+                        quantity,
+                        price,
+                        CostConfig(
+                            per_unit=self.config.commission_per_unit,
+                            rate=self.config.commission_rate,
+                            minimum=self.config.minimum_commission,
+                        ),
                     )
                     fill = PaperFill(
                         fill_id=f"{order.order_id}:{order.filled_quantity + quantity}",
@@ -314,6 +325,16 @@ class PaperTradingEngine:
                     )
                     self._apply_loss_locks(connection, account, equity, quote.timestamp)
                     fills.append(fill)
+                account = self._mark_quote_and_refresh_account(
+                    connection, account, quote, quote.timestamp
+                )
+                self._apply_loss_locks(
+                    connection,
+                    account,
+                    self._equity_from_positions(connection, account_id, account.cash),
+                    quote.timestamp,
+                )
+                self.store.record_risk_snapshot(connection, account_id, quote.timestamp)
         except IntegrityError as exc:
             raise PaperTradingError("duplicate or invalid paper fill") from exc
         except SQLAlchemyError as exc:
@@ -338,6 +359,7 @@ class PaperTradingEngine:
             )
             self.store.update_order(connection, cancelled, timestamp)
             self.store.release_reservation(connection, cancelled, timestamp)
+            self.store.record_risk_snapshot(connection, account_id, timestamp)
             return cancelled
 
     def activate_risk_lock(
@@ -349,6 +371,7 @@ class PaperTradingEngine:
         with self.store.engine.begin() as connection:
             self.store.locked_account(connection, account_id)
             self.store.activate_lock(connection, account_id, lock_type, reason, timestamp)
+            self.store.record_risk_snapshot(connection, account_id, timestamp)
 
     def recover(
         self, account_id: str
@@ -363,6 +386,52 @@ class PaperTradingEngine:
             self.store.account(account_id),
             self.store.positions(account_id),
             self.store.orders(account_id),
+        )
+
+    def risk_snapshot(self, account_id: str) -> PaperRiskSnapshot:
+        """Return the latest durable snapshot for the next Phase 7 evaluation."""
+
+        return self.store.latest_risk_snapshot(account_id)
+
+    def portfolio_risk_snapshot(self, account_id: str) -> PortfolioRiskSnapshot:
+        """Adapt the durable paper snapshot to the existing Phase 7 contract.
+
+        This is a one-way adapter, not another risk engine.  Paper's daily,
+        emergency, and health locks map to the firewall's conservative manual
+        lock category; its drawdown lock keeps its specific meaning.
+        """
+
+        account = self.store.account(account_id)
+        snapshot = self.risk_snapshot(account_id)
+        locks = frozenset(
+            RiskLock.DRAWDOWN
+            if lock is PaperRiskLockType.DRAWDOWN_LOCK
+            else RiskLock.MANUAL
+            for lock in snapshot.active_locks
+        )
+        positions = tuple(
+            RiskPositionSnapshot(
+                instrument=position.instrument,
+                net_notional=position.quantity * position.market_price,
+            )
+            for position in snapshot.positions
+            if position.quantity != 0
+        )
+        return PortfolioRiskSnapshot(
+            timestamp=snapshot.timestamp,
+            account_id=account.account_id,
+            account_currency=account.account_currency,
+            risk_day=account.risk_day,
+            equity=snapshot.equity,
+            cash=snapshot.cash,
+            margin_used=snapshot.used_margin,
+            margin_available=snapshot.available_margin,
+            daily_pnl=snapshot.daily_pnl,
+            high_water_mark=snapshot.high_water_mark,
+            positions=positions,
+            active_locks=locks,
+            reserved_intent_ids=self.store.active_reservation_intent_ids(account_id),
+            pending_intent_count=snapshot.pending_order_count,
         )
 
     def reconcile(self, account_id: str) -> None:
@@ -387,6 +456,38 @@ class PaperTradingEngine:
             raise PaperTradingError("account reserved risk differs from reservation ledger")
         if any(not position.quantity.is_finite() for position in positions):
             raise PaperTradingError("invalid position projection")
+        reconstructed: dict[str, PaperPosition] = {}
+        reconstructed_cash = account.starting_cash
+        reconstructed_fees = Decimal("0")
+        reconstructed_realized = Decimal("0")
+        for fill in fills:
+            before = reconstructed.get(fill.instrument.canonical_symbol)
+            projected, cash_delta, realized = self._apply_fill(before, fill)
+            reconstructed[fill.instrument.canonical_symbol] = projected
+            reconstructed_cash += cash_delta
+            reconstructed_fees += fill.commission
+            reconstructed_realized += realized
+        if reconstructed_cash != account.cash:
+            raise PaperTradingError("account cash differs from fill ledger")
+        if reconstructed_fees != account.fees:
+            raise PaperTradingError("account fees differs from fill ledger")
+        if reconstructed_realized != account.realized_pnl:
+            raise PaperTradingError("account realized P&L differs from fill ledger")
+        persisted = {item.instrument.canonical_symbol: item for item in positions}
+        if set(reconstructed) != set(persisted):
+            raise PaperTradingError("position projection differs from fill ledger")
+        for symbol, expected in reconstructed.items():
+            actual = persisted[symbol]
+            if (
+                actual.quantity != expected.quantity
+                or actual.average_entry_price != expected.average_entry_price
+                or actual.realized_pnl != expected.realized_pnl
+                or actual.fees != expected.fees
+            ):
+                raise PaperTradingError("position projection differs from fill ledger")
+        latest = self.store.latest_risk_snapshot(account_id)
+        if latest.reserved_risk != account.reserved_risk:
+            raise PaperTradingError("risk snapshot differs from account reservation state")
 
     def _validate_decision(
         self, decision: RiskDecision, quote: PaperQuote, timestamp: datetime, account_id: str
@@ -400,6 +501,17 @@ class PaperTradingEngine:
             raise PaperTradingError("future-dated risk decision or quote")
         if timestamp - decision.decision_timestamp > self.config.decision_max_age:
             raise PaperTradingError("risk decision is stale")
+        for name, source_timestamp in (
+            ("portfolio", decision.portfolio_snapshot_timestamp),
+            ("market", decision.market_snapshot_timestamp),
+        ):
+            if source_timestamp is None:
+                raise PaperTradingError(f"risk decision lacks {name} snapshot timestamp")
+            require_utc(source_timestamp)
+            if source_timestamp > decision.decision_timestamp or source_timestamp > timestamp:
+                raise PaperTradingError(f"risk decision {name} snapshot is future-dated")
+            if timestamp - source_timestamp > self.config.decision_max_age:
+                raise PaperTradingError(f"risk decision {name} snapshot is stale")
         if timestamp - quote.timestamp > self.config.quote_max_age:
             raise PaperTradingError("quote is stale")
         if decision.instrument != quote.instrument:
@@ -416,6 +528,30 @@ class PaperTradingEngine:
             or decision.configuration_id != account.risk_policy_configuration_id
         ):
             raise PaperTradingError("risk decision policy identity does not match account")
+
+    @staticmethod
+    def _validate_current_portfolio_snapshot(account: PaperAccount, decision: RiskDecision) -> None:
+        """Reject an authorization bound to a superseded account projection."""
+
+        if decision.portfolio_snapshot_timestamp != account.updated_at:
+            raise PaperTradingError("risk decision portfolio snapshot is no longer current")
+
+    @staticmethod
+    def _validate_order_request(
+        order_type: OrderType, limit_price: Decimal | None, stop_price: Decimal | None
+    ) -> None:
+        if order_type is OrderType.MARKET and (limit_price is not None or stop_price is not None):
+            raise PaperTradingError("market order cannot carry limit or stop prices")
+        if order_type is OrderType.LIMIT:
+            if stop_price is not None or limit_price is None:
+                raise PaperTradingError("limit order requires only a limit price")
+            if not limit_price.is_finite() or limit_price <= 0:
+                raise PaperTradingError("limit order price must be finite and positive")
+        if order_type is OrderType.STOP:
+            if limit_price is not None or stop_price is None:
+                raise PaperTradingError("stop order requires only a stop price")
+            if not stop_price.is_finite() or stop_price <= 0:
+                raise PaperTradingError("stop order price must be finite and positive")
 
     @staticmethod
     def _order_id(account_id: str, key: str, decision_id: str) -> str:
@@ -439,13 +575,10 @@ class PaperTradingEngine:
                 order.side is OrderSide.SELL and executable > order.stop_price
             ):
                 return None
-        price = (
-            executable + self.config.slippage_absolute
-            if order.side is OrderSide.BUY
-            else executable - self.config.slippage_absolute
-        )
-        if not price.is_finite() or price <= 0:
-            raise PaperTradingError("slippage produced invalid execution price")
+        try:
+            price = adverse_execution_price(order.side, executable, self.config.slippage_absolute)
+        except ExecutionPolicyError as exc:
+            raise PaperTradingError("slippage produced invalid execution price") from exc
         return executable, price
 
     @staticmethod
@@ -509,12 +642,70 @@ class PaperTradingEngine:
             (item.quantity * item.market_price for item in projected.values()), Decimal("0")
         )
 
+    def _equity_from_positions(
+        self, connection: Connection, account_id: str, cash: Decimal
+    ) -> Decimal:
+        return cash + sum(
+            (
+                item.quantity * item.market_price
+                for item in self.store.transaction_positions(connection, account_id)
+            ),
+            Decimal("0"),
+        )
+
+    def _mark_quote_and_refresh_account(
+        self,
+        connection: Connection,
+        account: PaperAccount,
+        quote: PaperQuote,
+        timestamp: datetime,
+    ) -> PaperAccount:
+        """Mark the quoted position at the causal quote midpoint.
+
+        A quote is an accounting event even where it fills no order: otherwise
+        equity, daily-loss, and drawdown controls could remain stale while a
+        position moves.  The midpoint is a documented valuation mark only;
+        executable fills still use bid/ask and adverse slippage.
+        """
+
+        position = self.store.locked_position(
+            connection, account.account_id, quote.instrument.canonical_symbol
+        )
+        if position is None:
+            return account
+        marked = replace(
+            position,
+            market_price=quote.midpoint,
+            unrealized_pnl=(quote.midpoint - position.average_entry_price) * position.quantity
+            if position.quantity
+            else Decimal("0"),
+            updated_at=timestamp,
+        )
+        self.store.upsert_position(connection, marked)
+        equity = self._equity_from_positions(connection, account.account_id, account.cash)
+        high_water_mark = max(account.high_water_mark, equity)
+        self.store.update_account_projection(
+            connection,
+            account,
+            cash=account.cash,
+            realized_pnl=account.realized_pnl,
+            fees=account.fees,
+            high_water_mark=high_water_mark,
+            risk_day=account.risk_day,
+            risk_day_starting_equity=account.risk_day_starting_equity,
+            timestamp=timestamp,
+        )
+        return replace(account, high_water_mark=high_water_mark, updated_at=timestamp)
+
     def _gross_exposure(self, connection: Connection, account_id: str) -> Decimal:
         """Return durable marked gross notional used by the reservation boundary."""
 
         return sum(
             (
-                abs(position.quantity * position.market_price)
+                max(
+                    abs(position.quantity * position.market_price),
+                    abs(position.quantity * position.average_entry_price),
+                )
                 for position in self.store.transaction_positions(connection, account_id)
             ),
             Decimal("0"),

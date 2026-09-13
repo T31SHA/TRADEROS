@@ -268,7 +268,11 @@ def test_partial_fills_conserve_quantity_then_release_reservation(
         engine.submit(
             account_id="paper-1",
             idempotency_key="exposure-after-fill",
-            risk_decision=decision("exposure-after-fill", max_new_notional=Decimal("100")),
+            risk_decision=decision(
+                "exposure-after-fill",
+                timestamp=NOW + timedelta(seconds=3),
+                max_new_notional=Decimal("100"),
+            ),
             quote=quote(NOW + timedelta(seconds=3)),
             timestamp=NOW + timedelta(seconds=3),
         )

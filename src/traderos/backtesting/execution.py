@@ -41,6 +41,37 @@ class TransactionCostModel(Protocol):
         """Return commission and its settlement currency."""
 
 
+def adverse_execution_price(side: OrderSide, reference: Decimal, absolute: Decimal) -> Decimal:
+    """Apply the canonical fixed adverse-slippage rule.
+
+    This deliberately small primitive is shared by historical and paper
+    execution.  Adapters own their market-event shape (a bar versus a quote),
+    but neither adapter gets to redefine the financial cost rule.
+    """
+
+    if not reference.is_finite() or reference <= 0:
+        raise ExecutionPolicyError("execution reference must be finite and positive")
+    if not absolute.is_finite() or absolute < 0:
+        raise ExecutionPolicyError("slippage must be finite and non-negative")
+    price = reference + absolute if side is OrderSide.BUY else reference - absolute
+    if not price.is_finite() or price <= 0:
+        raise ExecutionPolicyError("execution price must be finite and positive")
+    return price
+
+
+def commission_amount(quantity: Decimal, price: Decimal, config: CostConfig) -> Decimal:
+    """Calculate one canonical Decimal commission amount for a fill slice."""
+
+    if not quantity.is_finite() or quantity <= 0:
+        raise ExecutionPolicyError("commission quantity must be finite and positive")
+    if not price.is_finite() or price <= 0:
+        raise ExecutionPolicyError("commission price must be finite and positive")
+    return max(
+        config.per_unit * quantity + config.rate * quantity * price,
+        config.minimum,
+    )
+
+
 @dataclass(frozen=True)
 class QuoteOrFixedSpreadModel:
     """Use bar bid/ask when present, otherwise a configured absolute spread."""
@@ -70,9 +101,7 @@ class FixedSlippageModel:
     absolute: Decimal = Decimal("0")
 
     def apply(self, side: OrderSide, reference: Decimal) -> Decimal:
-        if self.absolute < 0 or not self.absolute.is_finite():
-            raise ExecutionPolicyError("slippage must be finite and non-negative")
-        return reference + self.absolute if side is OrderSide.BUY else reference - self.absolute
+        return adverse_execution_price(side, reference, self.absolute)
 
 
 @dataclass(frozen=True)
@@ -82,8 +111,7 @@ class CommissionModel:
     config: CostConfig
 
     def calculate(self, quantity: Decimal, price: Decimal, bar: MarketBar) -> Commission:
-        amount = self.config.per_unit * quantity + self.config.rate * quantity * price
-        amount = max(amount, self.config.minimum)
+        amount = commission_amount(quantity, price, self.config)
         currency = bar.instrument.trading_currency or bar.currency or bar.instrument.quote_currency
         if currency is None:
             raise ExecutionPolicyError("commission currency is unavailable for instrument")
@@ -256,6 +284,8 @@ class ExecutionSimulator:
 
 
 __all__ = [
+    "adverse_execution_price",
+    "commission_amount",
     "CommissionModel",
     "ExecutionReport",
     "ExecutionSimulator",

@@ -13,7 +13,9 @@ The bar identity includes `symbol`, `timeframe`, `timestamp`, `source_id`, and
 Phase 8 adds `002_paper_trading.sql`. It creates durable, PostgreSQL-authoritative
 paper accounts, projections, orders, fills, reservations, risk locks, and
 append-only audit records. `003_paper_trading_hardening.sql` adds durable value
-domain constraints without rewriting the already-released 002 migration. Paper
+domain constraints without rewriting the already-released 002 migration.
+`004_paper_risk_snapshots.sql` adds the append-only, timestamped account view
+used as the durable hand-off to the next Phase 7 evaluation. Paper
 order/reservation creation and fill/projection updates are each one database
 transaction; no migration contains a broker URL, credential, or live execution
 capability.

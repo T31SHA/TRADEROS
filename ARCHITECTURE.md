@@ -192,13 +192,15 @@ Phase 8 adds the offline durable paper path:
 ```text
 approved immutable RiskDecision → Decimal sizing → PaperOrder + reservation
 → later supplied PaperQuote → PaperFill → durable account/position projection
+→ durable risk snapshot
 ```
 
 `traderos.paper.PaperTradingEngine` is the sole quantity-bearing order path.
 It accepts neither a `UnifiedTradeIntent` nor caller-created orders/fills, and
 consumes an approval only for the account identified by its Phase 7 portfolio
 snapshot. Its SQLAlchemy store uses the account row as the transaction lock point and commits
-order/reservation/audit together, then fill/portfolio projection/audit together.
+order/reservation/audit/risk-snapshot together, then
+fill/portfolio-projection/audit/risk-snapshot together.
 The append-only fill/audit ledger supports recovery and reconciliation. It
 reuses Phase 3's signed-position, Decimal, spread/slippage/commission concepts
 without turning the historical backtester into a mutable service. Market data

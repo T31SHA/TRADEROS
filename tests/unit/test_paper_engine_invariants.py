@@ -26,6 +26,7 @@ from traderos.risk import (
     RiskAuthorization,
     RiskDecision,
     RiskDecisionStatus,
+    RiskLock,
     RiskReasonCode,
     risk_decision_integrity_id,
 )
@@ -125,6 +126,34 @@ def test_decision_validation_rejects_temporal_scope_status_and_tampering(
             NOW,
             "engine-account",
         )
+    stale_portfolio = _decision("stale-portfolio", timestamp=NOW + timedelta(minutes=6))
+    stale_portfolio = replace(
+        stale_portfolio,
+        portfolio_snapshot_timestamp=NOW,
+    )
+    stale_portfolio = replace(
+        stale_portfolio,
+        decision_id=risk_decision_integrity_id(stale_portfolio),
+    )
+    with pytest.raises(PaperTradingError, match="portfolio snapshot is stale"):
+        engine._validate_decision(
+            stale_portfolio,
+            _quote(NOW + timedelta(minutes=6)),
+            NOW + timedelta(minutes=6),
+            "engine-account",
+        )
+    missing_market = replace(_decision("missing-market"), market_snapshot_timestamp=None)
+    missing_market = replace(
+        missing_market, decision_id=risk_decision_integrity_id(missing_market)
+    )
+    with pytest.raises(PaperTradingError, match="lacks market snapshot"):
+        engine._validate_decision(missing_market, _quote(), NOW, "engine-account")
+    future_market = replace(
+        _decision("future-market"), market_snapshot_timestamp=NOW + timedelta(seconds=1)
+    )
+    future_market = replace(future_market, decision_id=risk_decision_integrity_id(future_market))
+    with pytest.raises(PaperTradingError, match="market snapshot is future"):
+        engine._validate_decision(future_market, _quote(), NOW, "engine-account")
     rejected = replace(
         valid,
         status=RiskDecisionStatus.REJECT,
@@ -350,6 +379,94 @@ def test_risk_day_and_loss_locks_are_persisted_from_accounting_state(
         )
 
 
+def test_durable_risk_snapshots_capture_reservations_marks_and_loss_locks(
+    engine: PaperTradingEngine,
+) -> None:
+    initial = engine.risk_snapshot("engine-account")
+    assert initial.equity == Decimal("1000")
+    assert initial.pending_order_count == 0
+    assert initial.mark_timestamp is None
+
+    submitted = engine.submit(
+        account_id="engine-account",
+        idempotency_key="snapshots",
+        risk_decision=_decision("snapshots"),
+        quote=_quote(),
+        timestamp=NOW,
+    )
+    reserved = engine.risk_snapshot("engine-account")
+    assert reserved.pending_order_count == 1
+    assert reserved.reserved_risk > 0
+
+    for second in (1, 2, 3):
+        event_at = NOW + timedelta(seconds=second)
+        engine.process_quote(
+            account_id="engine-account", quote=_quote(event_at), timestamp=event_at
+        )
+    assert (
+        engine.store.order("engine-account", submitted.order_id).status is PaperOrderStatus.FILLED
+    )
+
+    loss_at = NOW + timedelta(seconds=4)
+    engine.process_quote(
+        account_id="engine-account",
+        quote=PaperQuote(_instrument(), loss_at, Decimal("1"), Decimal("2")),
+        timestamp=loss_at,
+    )
+    loss_snapshot = engine.risk_snapshot("engine-account")
+    assert loss_snapshot.mark_timestamp == loss_at
+    assert loss_snapshot.equity < Decimal("1000")
+    assert PaperRiskLockType.DAILY_LOSS_LOCK in loss_snapshot.active_locks
+    assert PaperRiskLockType.DRAWDOWN_LOCK in loss_snapshot.active_locks
+    assert len(engine.store.risk_snapshots("engine-account")) >= 6
+    firewall_snapshot = engine.portfolio_risk_snapshot("engine-account")
+    assert firewall_snapshot.equity == loss_snapshot.equity
+    assert firewall_snapshot.pending_intent_count == loss_snapshot.pending_order_count
+    assert {RiskLock.DRAWDOWN, RiskLock.MANUAL} <= firewall_snapshot.active_locks
+    engine.reconcile("engine-account")
+
+
+def test_submission_rejects_a_superseded_portfolio_snapshot_and_validates_order_shape(
+    engine: PaperTradingEngine,
+) -> None:
+    submitted = engine.submit(
+        account_id="engine-account",
+        idempotency_key="snapshot-current",
+        risk_decision=_decision("snapshot-current"),
+        quote=_quote(),
+        timestamp=NOW,
+    )
+    advanced = NOW + timedelta(seconds=1)
+    engine.process_quote(account_id="engine-account", quote=_quote(advanced), timestamp=advanced)
+    stale = _decision("superseded", timestamp=advanced)
+    stale = replace(stale, portfolio_snapshot_timestamp=NOW)
+    stale = replace(stale, decision_id=risk_decision_integrity_id(stale))
+    with pytest.raises(PaperTradingError, match="no longer current"):
+        engine.submit(
+            account_id="engine-account",
+            idempotency_key="superseded",
+            risk_decision=stale,
+            quote=_quote(advanced),
+            timestamp=advanced,
+        )
+    with pytest.raises(PaperTradingError, match="limit order requires only"):
+        engine._validate_order_request(OrderType.LIMIT, None, Decimal("1"))
+    with pytest.raises(PaperTradingError, match="limit order price"):
+        engine._validate_order_request(OrderType.LIMIT, Decimal("0"), None)
+    with pytest.raises(PaperTradingError, match="stop order requires only"):
+        engine._validate_order_request(OrderType.STOP, Decimal("1"), None)
+    with pytest.raises(PaperTradingError, match="stop order price"):
+        engine._validate_order_request(OrderType.STOP, None, Decimal("0"))
+    assert engine.store.order("engine-account", submitted.order_id).filled_quantity > 0
+    cancelled = engine.cancel(
+        account_id="engine-account",
+        order_id=submitted.order_id,
+        timestamp=advanced + timedelta(seconds=1),
+        reason="test cancellation",
+    )
+    assert cancelled.status is PaperOrderStatus.CANCELLED
+
+
 def test_engine_rejects_invalid_quotes_policy_scope_and_locked_new_risk(
     engine: PaperTradingEngine,
 ) -> None:
@@ -381,6 +498,15 @@ def test_engine_rejects_invalid_quotes_policy_scope_and_locked_new_risk(
             ),
             NOW,
             "engine-account",
+        )
+    with pytest.raises(PaperTradingError, match="market order"):
+        engine.submit(
+            account_id="engine-account",
+            idempotency_key="invalid-market-shape",
+            risk_decision=_decision("invalid-market-shape"),
+            quote=_quote(),
+            timestamp=NOW,
+            limit_price=Decimal("100"),
         )
     engine.activate_risk_lock(
         account_id="engine-account",

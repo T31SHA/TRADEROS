@@ -336,6 +336,44 @@ paper_risk_locks = Table(
     ),
 )
 
+paper_risk_snapshots = Table(
+    "paper_risk_snapshots",
+    metadata,
+    Column("snapshot_id", String(128), primary_key=True),
+    Column("account_id", String(64), ForeignKey("paper_accounts.account_id"), nullable=False),
+    Column("timestamp", DateTime(timezone=True), nullable=False),
+    Column("cash", Numeric(28, 12), nullable=False),
+    Column("equity", Numeric(28, 12), nullable=False),
+    Column("used_margin", Numeric(28, 12), nullable=False),
+    Column("available_margin", Numeric(28, 12), nullable=False),
+    Column("gross_exposure", Numeric(28, 12), nullable=False),
+    Column("net_exposure", Numeric(28, 12), nullable=False),
+    Column("long_exposure", Numeric(28, 12), nullable=False),
+    Column("short_exposure", Numeric(28, 12), nullable=False),
+    Column("realized_pnl", Numeric(28, 12), nullable=False),
+    Column("unrealized_pnl", Numeric(28, 12), nullable=False),
+    Column("fees", Numeric(28, 12), nullable=False),
+    Column("daily_pnl", Numeric(28, 12), nullable=False),
+    Column("high_water_mark", Numeric(28, 12), nullable=False),
+    Column("drawdown", Numeric(28, 12), nullable=False),
+    Column("reserved_risk", Numeric(28, 12), nullable=False),
+    Column("pending_order_count", Integer, nullable=False),
+    Column("active_locks", JSON, nullable=False),
+    Column("mark_timestamp", DateTime(timezone=True)),
+    Column("positions", JSON, nullable=False),
+    CheckConstraint(
+        "used_margin >= 0 AND available_margin >= 0 AND gross_exposure >= 0 "
+        "AND long_exposure >= 0 AND short_exposure >= 0 AND fees >= 0 "
+        "AND drawdown >= 0 AND reserved_risk >= 0 AND pending_order_count >= 0",
+        name="ck_paper_risk_snapshot_nonnegative",
+    ),
+)
+Index(
+    "ix_paper_risk_snapshots_account_time",
+    paper_risk_snapshots.c.account_id,
+    paper_risk_snapshots.c.timestamp,
+)
+
 paper_audit_events = Table(
     "paper_audit_events",
     metadata,
@@ -371,4 +409,5 @@ __all__ = [
     "paper_positions",
     "paper_reservations",
     "paper_risk_locks",
+    "paper_risk_snapshots",
 ]

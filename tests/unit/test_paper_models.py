@@ -149,6 +149,10 @@ def test_configuration_is_strict_deterministic_and_rejects_bad_decimal_values() 
         PaperExecutionConfig(commission_rate=Decimal("-0.1"))
     with pytest.raises(ValidationError):
         PaperExecutionConfig(max_fill_quantity=Decimal("0"))
+    with pytest.raises(ValidationError, match="minimum_quantity"):
+        PaperExecutionConfig(minimum_quantity=Decimal("2"), maximum_quantity=Decimal("1"))
+    with pytest.raises(ValidationError, match="align"):
+        PaperExecutionConfig(quantity_increment=Decimal("0.2"), minimum_quantity=Decimal("0.3"))
 
 
 def test_quote_account_position_and_fill_reject_invalid_numeric_or_temporal_state() -> None:

@@ -1,6 +1,6 @@
 """Real PostgreSQL verification for the Phase 8 durable paper boundary.
 
-Run only against a disposable database whose migrations 001, 002, and 003 have been
+Run only against a disposable database whose migrations 001 through 004 have been
 applied, for example with ``TRADEROS_POSTGRES_TEST_URL`` set by the local test
 harness.  No test creates a network or broker connection.
 """
@@ -194,8 +194,9 @@ def postgres_engine(postgres_url: str) -> Iterator[PaperTradingEngine]:
     with engine.store.engine.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE paper_audit_events, paper_fills, paper_reservations, paper_orders, "
-                "paper_positions, paper_risk_locks, paper_accounts, instruments CASCADE"
+                "TRUNCATE paper_audit_events, paper_risk_snapshots, paper_fills, "
+                "paper_reservations, paper_orders, paper_positions, paper_risk_locks, "
+                "paper_accounts, instruments CASCADE"
             )
         )
     yield engine
@@ -235,6 +236,7 @@ def test_postgres_migration_constraints_and_atomic_rollback(
             "paper_reservations",
             "paper_fills",
             "paper_risk_locks",
+            "paper_risk_snapshots",
             "paper_audit_events",
         }
         constraints = connection.execute(

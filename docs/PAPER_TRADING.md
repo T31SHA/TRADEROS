@@ -37,8 +37,16 @@ conversion or broker margin.
 ## Durable state and transactions
 
 `002_paper_trading.sql`, hardening migration `003_paper_trading_hardening.sql`,
-and the aligned SQLAlchemy schema define accounts,
-positions, orders, fills, reservations, locks, and append-only audit events.
+`004_paper_risk_snapshots.sql`, and the aligned SQLAlchemy schema define
+accounts, positions, orders, fills, reservations, locks, append-only audit
+events, and append-only risk snapshots. Every material transition produces a
+snapshot of cash, equity, gross/net/long/short exposure, realized/unrealized
+P&L, fees, reservations, pending orders, active locks, and the oldest position
+mark timestamp. The snapshot is a durable Phase 7 hand-off, not a competing
+source of truth. `PaperTradingEngine.portfolio_risk_snapshot(account_id)` is
+the explicit one-way adapter to Phase 7's existing `PortfolioRiskSnapshot`;
+daily, emergency, and health locks map conservatively to its manual lock and
+the drawdown lock retains its specific meaning.
 Account rows are locked for submission/fill transitions. An order, reservation,
 and related audit events commit in one transaction. Fills, their accounting
 projection, lifecycle update, reservation release, and audit event likewise
@@ -65,7 +73,10 @@ trigger at the executable quote and gaps fill at that quote, never the stale
 stop level. `max_fill_quantity` creates deterministic partial fills.
 
 A quote must be UTC-aware, current within configuration, and strictly later
-than submission. Every order records the last market event processed, so a
+than submission. It is also a valuation event: after fills, it marks an open
+position in its instrument at the quote midpoint. Bid/ask plus adverse slippage
+remain the executable fill prices; a valuation mark is never a fill. Every
+order records the last market event processed, so a
 replayed or out-of-order quote cannot duplicate a fill. The engine obtains no
 market data itself.
 
@@ -83,7 +94,8 @@ reservations and durable marked gross position exposure from that capacity;
 therefore releasing a filled order's reservation cannot create new risk
 capacity while its position remains open. Filled, cancelled, rejected, and
 expired orders release their reservation. Daily loss is measured from an
-explicit UTC-day starting-equity reference. Drawdown is measured from the
+explicit UTC-day starting-equity reference and includes causal marked
+unrealized P&L. Drawdown is measured from the
 persisted high-water mark. Breaches activate durable daily-loss/drawdown
 locks. A persisted lock blocks new/increased risk after restart while explicit
 Phase 7 reduction-only authorization remains possible. Manual emergency and
@@ -101,8 +113,8 @@ execution. It remains offline and deterministic.
 
 The PostgreSQL integration suite is intentionally opt-in and skips unless
 `TRADEROS_POSTGRES_TEST_URL` names a disposable database that already has
-migrations 001, 002, and 003. `scripts/verify_phase8_postgres.sh` applies all
-three migrations and runs the suite when given matching caller-supplied libpq and
+migrations 001 through 004. `scripts/verify_phase8_postgres.sh` applies all
+four migrations and runs the suite when given matching caller-supplied libpq and
 SQLAlchemy URLs. The suite uses independently spawned processes and database
 connections for reservation, idempotency, and fill/cancel races; it does not
 substitute threads or SQLite for those assertions.

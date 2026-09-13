@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from traderos.backtesting.models import OrderSide, OrderType, TimeInForce
 from traderos.data.instruments import Instrument
@@ -147,6 +147,18 @@ class PaperExecutionConfig(BaseModel):
     def valid_fill_quantity(cls, value: Decimal | None) -> Decimal | None:
         return None if value is None else _finite_positive(value, "max_fill_quantity")
 
+    @model_validator(mode="after")
+    def coherent_quantity_constraints(self) -> PaperExecutionConfig:
+        if self.minimum_quantity > self.maximum_quantity:
+            raise ValueError("minimum_quantity cannot exceed maximum_quantity")
+        minimum_steps = self.minimum_quantity / self.quantity_increment
+        maximum_steps = self.maximum_quantity / self.quantity_increment
+        if minimum_steps != minimum_steps.to_integral_value() or (
+            maximum_steps != maximum_steps.to_integral_value()
+        ):
+            raise ValueError("quantity bounds must align with quantity_increment")
+        return self
+
     @property
     def configuration_id(self) -> str:
         payload = self.model_dump(mode="json")
@@ -213,12 +225,15 @@ class PaperAccount:
                 raise PaperTradingError("paper account values must be finite")
         if (
             self.starting_cash <= 0
+            or self.cash < 0
+            or self.reserved_risk < 0
             or self.risk_capacity <= 0
             or self.daily_loss_limit <= 0
             or self.max_drawdown <= 0
+            or self.risk_day_starting_equity <= 0
             or self.high_water_mark <= 0
         ):
-            raise PaperTradingError("paper account capital values must be positive")
+            raise PaperTradingError("paper account capital values are invalid")
         _utc(self.created_at)
         _utc(self.updated_at)
 
@@ -249,6 +264,87 @@ class PaperPosition:
                 raise PaperTradingError("position values must be finite")
         if self.average_entry_price < 0 or self.market_price < 0:
             raise PaperTradingError("position prices must be non-negative")
+
+
+@dataclass(frozen=True)
+class PaperRiskSnapshot:
+    """Immutable, durable account state supplied to the next risk evaluation.
+
+    Phase 8 does not fabricate broker margin or FX conversion.  Consequently
+    the v1 margin fields are explicitly conservative model values: no margin
+    is used and available margin equals current equity.  ``mark_timestamp`` is
+    the oldest position mark contributing to equity, so callers can reject a
+    snapshot whose valuation is no longer current.
+    """
+
+    snapshot_id: str
+    account_id: str
+    timestamp: datetime
+    cash: Decimal
+    equity: Decimal
+    used_margin: Decimal
+    available_margin: Decimal
+    gross_exposure: Decimal
+    net_exposure: Decimal
+    long_exposure: Decimal
+    short_exposure: Decimal
+    realized_pnl: Decimal
+    unrealized_pnl: Decimal
+    fees: Decimal
+    daily_pnl: Decimal
+    high_water_mark: Decimal
+    drawdown: Decimal
+    reserved_risk: Decimal
+    pending_order_count: int
+    active_locks: tuple[PaperRiskLockType, ...]
+    mark_timestamp: datetime | None
+    positions: tuple[PaperPosition, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.snapshot_id.strip() or not self.account_id.strip():
+            raise PaperTradingError("risk snapshot identity must not be blank")
+        _utc(self.timestamp)
+        if self.mark_timestamp is not None:
+            _utc(self.mark_timestamp)
+            if self.mark_timestamp > self.timestamp:
+                raise PaperTradingError("risk snapshot mark timestamp cannot be future-dated")
+        if self.pending_order_count < 0:
+            raise PaperTradingError("risk snapshot pending order count must be non-negative")
+        if any(item.account_id != self.account_id for item in self.positions):
+            raise PaperTradingError("risk snapshot positions must belong to its account")
+        for value in (
+            self.cash,
+            self.equity,
+            self.used_margin,
+            self.available_margin,
+            self.gross_exposure,
+            self.net_exposure,
+            self.long_exposure,
+            self.short_exposure,
+            self.realized_pnl,
+            self.unrealized_pnl,
+            self.fees,
+            self.daily_pnl,
+            self.high_water_mark,
+            self.drawdown,
+            self.reserved_risk,
+        ):
+            if not value.is_finite():
+                raise PaperTradingError("risk snapshot values must be finite")
+        if any(
+            value < 0
+            for value in (
+                self.used_margin,
+                self.available_margin,
+                self.gross_exposure,
+                self.long_exposure,
+                self.short_exposure,
+                self.fees,
+                self.drawdown,
+                self.reserved_risk,
+            )
+        ):
+            raise PaperTradingError("risk snapshot non-negative value is invalid")
 
 
 @dataclass(frozen=True)
@@ -309,6 +405,10 @@ class PaperOrder:
             raise PaperTradingError("limit order needs a limit price")
         if self.order_type is OrderType.STOP and self.stop_price is None:
             raise PaperTradingError("stop order needs a stop price")
+        if self.order_type is not OrderType.LIMIT and self.limit_price is not None:
+            raise PaperTradingError("only limit orders may specify a limit price")
+        if self.order_type is not OrderType.STOP and self.stop_price is not None:
+            raise PaperTradingError("only stop orders may specify a stop price")
         for price in (self.limit_price, self.stop_price, self.average_fill_price):
             if price is not None:
                 _finite_positive(price, "order price")
@@ -432,6 +532,7 @@ __all__ = [
     "PaperOrderStatus",
     "PaperPosition",
     "PaperQuote",
+    "PaperRiskSnapshot",
     "PaperRiskLockType",
     "PaperTradingError",
     "SizingResult",
