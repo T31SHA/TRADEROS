@@ -428,6 +428,7 @@ def test_postgres_fill_cancel_race_has_one_coherent_economic_effect(
 
 @pytest.mark.integration
 def test_postgres_recovery_replay_and_authorization_guards(
+    postgres_url: str,
     postgres_engine: PaperTradingEngine,
 ) -> None:
     _create_account(postgres_engine)
@@ -439,7 +440,8 @@ def test_postgres_recovery_replay_and_authorization_guards(
         quote=_quote(),
         timestamp=NOW,
     )
-    restarted = _new_engine(str(postgres_engine.store.engine.url), max_fill=Decimal("4"))
+    assert "***" in str(postgres_engine.store.engine.url)
+    restarted = _new_engine(postgres_url, max_fill=Decimal("4"))
     retried = restarted.submit(
         account_id=ACCOUNT,
         idempotency_key="crash-before-ack",
@@ -477,13 +479,13 @@ def test_postgres_recovery_replay_and_authorization_guards(
         reason="recovery-test",
         timestamp=NOW + timedelta(seconds=2),
     )
-    second_restart = _new_engine(str(postgres_engine.store.engine.url))
+    second_restart = _new_engine(postgres_url)
     assert PaperRiskLockType.EMERGENCY_LOCK in second_restart.store.active_locks(ACCOUNT)
     with pytest.raises(PaperTradingError, match="risk lock"):
         second_restart.submit(
             account_id=ACCOUNT,
             idempotency_key="blocked-after-restart",
-            risk_decision=_decision("blocked-decision", timestamp=NOW + timedelta(seconds=2)),
+            risk_decision=_decision("blocked-decision", timestamp=first_event.timestamp),
             quote=_quote(NOW + timedelta(seconds=2)),
             timestamp=NOW + timedelta(seconds=2),
         )
