@@ -15,9 +15,12 @@ from traderos.research.analysis import (
     trade_path_monte_carlo,
 )
 from traderos.research.dataset import (
+    DatasetEligibilityReport,
     DatasetQualification,
     DatasetQualificationStatus,
     QualificationPolicy,
+    ResearchDatasetEligibility,
+    assess_empirical_eligibility,
     qualify_dataset,
 )
 from traderos.research.governance import CandidateStatus, ResearchHypothesis, StrategyCandidate
@@ -109,6 +112,65 @@ def test_dataset_qualification_is_hash_bound_and_fails_closed_on_incomplete_quot
     assert rejected.status is DatasetQualificationStatus.REJECTED
     with pytest.raises(ResearchError, match="failed closed"):
         rejected.require_qualified()
+
+
+def test_empirical_dataset_eligibility_separates_fixtures_from_qualified_evidence() -> None:
+    """A fixture is useful for architecture tests but can never support promotion."""
+
+    qualified = qualify_dataset(
+        manifest=_manifest(),
+        bars=_bars(),
+        policy=QualificationPolicy("dataset", "1", require_quotes=True),
+        checked_at=BASE,
+    )
+    fixture = assess_empirical_eligibility(
+        qualification=qualified,
+        deterministic_test_fixture=True,
+        source_version="fixture-v1",
+        calendar_identity="forex-calendar-v1",
+        quote_convention="bid_ask",
+    )
+    assert fixture.eligibility is ResearchDatasetEligibility.DETERMINISTIC_TEST_FIXTURE
+    assert not fixture.empirically_eligible
+
+    empirical = assess_empirical_eligibility(
+        qualification=qualified,
+        deterministic_test_fixture=False,
+        source_version="immutable-provider-v1",
+        calendar_identity="forex-calendar-v1",
+        quote_convention="bid_ask",
+    )
+    assert empirical.eligibility is ResearchDatasetEligibility.EMPIRICALLY_QUALIFIED_DATASET
+    assert empirical.empirically_eligible
+
+    blocked = assess_empirical_eligibility(
+        qualification=qualified,
+        deterministic_test_fixture=False,
+        source_version=None,
+        calendar_identity=None,
+    )
+    assert blocked.eligibility is ResearchDatasetEligibility.BLOCKED
+    assert set(blocked.blockers) == {
+        "source_version_missing",
+        "calendar_identity_missing",
+        "quote_or_price_convention_missing",
+    }
+    with pytest.raises(ResearchError, match="eligible empirical datasets"):
+        DatasetEligibilityReport(
+            qualified,
+            ResearchDatasetEligibility.EMPIRICALLY_QUALIFIED_DATASET,
+            None,
+            "calendar",
+            "bid_ask",
+        )
+    with pytest.raises(ResearchError, match="blocked dataset eligibility"):
+        DatasetEligibilityReport(
+            qualified,
+            ResearchDatasetEligibility.BLOCKED,
+            "source",
+            "calendar",
+            "bid_ask",
+        )
 
 
 def test_candidate_lineage_is_deterministic_and_locked_state_cannot_reopen() -> None:

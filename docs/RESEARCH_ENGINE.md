@@ -32,10 +32,9 @@ accounting, and metrics are never reimplemented in Phase 9.
 
 Candidate provenance records Phase 4 strategy version, Phase 5 regime
 configuration, Phase 6 fusion configuration, and Phase 7 risk configuration.
-Those components remain canonical. The current Phase 3 strategy adapter
-predates the Phase 6/7 path, so results must state when they are strategy-level
-replays rather than fully fused/risk-gated portfolio replays. Phase 8 sizing
-and state are neither duplicated nor mutated by research.
+Those components are executed by canonical historical replay rather than merely
+recorded as identities. Phase 8 sizing and state are neither duplicated nor
+mutated by research.
 
 ## Canonical historical replay
 
@@ -58,6 +57,10 @@ Every decision records an audit event, including fusion, risk, and sizing
 rejections. A non-directional fused intent never reaches risk or Phase 3; a
 rejected risk decision never creates a Phase 3 order. The adapter uses exact
 Phase 3 completion/next-open boundaries without same-bar OHLC execution.
+Deterministic integration coverage verifies stale-regime rejection,
+cross-instrument and timeframe isolation, future mutation/append invariance,
+fusion and risk vetoes, sizing bounds, and next-bar execution. This is
+architectural verification only, not empirical strategy validation.
 
 ## Data, temporal, and OOS integrity
 
