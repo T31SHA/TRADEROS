@@ -68,6 +68,26 @@ class DecisionMatrixRow:
     interpretation: str
 
 
+@dataclass(frozen=True)
+class MonteCarloSummary:
+    """Deterministic trade-path stress summary, not a forecast."""
+
+    method: str
+    seed: int
+    simulations: int
+    observations: int
+    terminal_p05: float | None
+    terminal_p50: float | None
+    terminal_p95: float | None
+    loss_probability: float | None
+
+
+def benjamini_hochberg_adjusted_p_values(p_values: Mapping[str, float]) -> dict[str, float]:
+    """Apply BH FDR correction when the research family assumptions support it."""
+
+    return _fdr_adjust(p_values, dependence_multiplier=1.0)
+
+
 def _require_finite(values: Sequence[float]) -> tuple[float, ...]:
     result = tuple(values)
     if any(not isfinite(value) for value in result):
@@ -136,6 +156,12 @@ def benjamini_yekutieli_adjusted_p_values(p_values: Mapping[str, float]) -> dict
     validation, or disclosure of all candidate configurations.
     """
 
+    count = len(p_values)
+    harmonic = sum(1 / index for index in range(1, count + 1))
+    return _fdr_adjust(p_values, dependence_multiplier=harmonic)
+
+
+def _fdr_adjust(p_values: Mapping[str, float], *, dependence_multiplier: float) -> dict[str, float]:
     if not p_values:
         return {}
     if any(
@@ -145,15 +171,58 @@ def benjamini_yekutieli_adjusted_p_values(p_values: Mapping[str, float]) -> dict
         raise ResearchError("p-values require non-blank identities and finite values in [0, 1]")
     ordered = sorted(p_values.items(), key=lambda item: (item[1], item[0]))
     count = len(ordered)
-    harmonic = sum(1 / index for index in range(1, count + 1))
     adjusted_by_key: dict[str, float] = {}
     running = 1.0
     for index in range(count, 0, -1):
         key, value = ordered[index - 1]
-        candidate = min(1.0, value * count * harmonic / index)
+        candidate = min(1.0, value * count * dependence_multiplier / index)
         running = min(running, candidate)
         adjusted_by_key[key] = running
     return adjusted_by_key
+
+
+def trade_path_monte_carlo(
+    returns: Sequence[float],
+    *,
+    simulations: int,
+    seed: int,
+    block_size: int = 1,
+) -> MonteCarloSummary:
+    """Bootstrap trade paths, using contiguous blocks where dependence matters.
+
+    The supplied values are simple returns.  Results describe perturbations of
+    this observed sample only and are intentionally not probability forecasts.
+    """
+
+    values = _require_finite(returns)
+    if simulations < 1 or block_size < 1:
+        raise ResearchError("simulation count and block size must be positive")
+    if len(values) < block_size:
+        return MonteCarloSummary(
+            "moving_block_bootstrap", seed, simulations, len(values), None, None, None, None
+        )
+    random = Random(seed)
+    terminals: list[float] = []
+    starts = len(values) - block_size + 1
+    for _ in range(simulations):
+        path: list[float] = []
+        while len(path) < len(values):
+            start = random.randrange(starts)
+            path.extend(values[start : start + block_size])
+        terminal = 1.0
+        for value in path[: len(values)]:
+            terminal *= 1.0 + value
+        terminals.append(terminal - 1.0)
+    return MonteCarloSummary(
+        "moving_block_bootstrap",
+        seed,
+        simulations,
+        len(values),
+        _quantile(terminals, 0.05),
+        _quantile(terminals, 0.50),
+        _quantile(terminals, 0.95),
+        sum(value <= 0 for value in terminals) / len(terminals),
+    )
 
 
 def outlier_dependence(pnls: Sequence[Decimal]) -> OutlierDependence:
@@ -270,11 +339,14 @@ __all__ = [
     "BootstrapSummary",
     "DecisionEvidence",
     "DecisionMatrixRow",
+    "MonteCarloSummary",
     "OutlierDependence",
+    "benjamini_hochberg_adjusted_p_values",
     "benjamini_yekutieli_adjusted_p_values",
     "classify_evidence",
     "decision_matrix",
     "moving_block_bootstrap_mean",
     "net_after_costs",
     "outlier_dependence",
+    "trade_path_monte_carlo",
 ]

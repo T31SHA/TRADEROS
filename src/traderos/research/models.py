@@ -327,6 +327,8 @@ class ExperimentSpec:
     random_seed: int | None
     selection_eligible: bool
     frozen_from_experiment_id: str | None = None
+    research_family_id: str | None = None
+    candidate_id: str | None = None
 
     def __post_init__(self) -> None:
         required = (
@@ -346,6 +348,10 @@ class ExperimentSpec:
             raise OosContaminationError("locked OOS experiments cannot be eligible for selection")
         if self.scope is ResearchScope.LOCKED_OUT_OF_SAMPLE and not self.frozen_from_experiment_id:
             raise ResearchError("locked OOS evaluation requires a frozen development experiment")
+        if (self.research_family_id is None) != (self.candidate_id is None):
+            raise ResearchError(
+                "research family and candidate identities must be supplied together"
+            )
 
     @classmethod
     def from_parameters(
@@ -379,6 +385,8 @@ class ExperimentSpec:
             "random_seed": self.random_seed,
             "selection_eligible": self.selection_eligible,
             "frozen_from_experiment_id": self.frozen_from_experiment_id,
+            "research_family_id": self.research_family_id,
+            "candidate_id": self.candidate_id,
         }
 
     @property

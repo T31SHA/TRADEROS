@@ -65,13 +65,14 @@ or network adapter is implemented.
 
 ## Phase 9 — Research and validation — complete (empirical decision invalid)
 
-Immutable dataset/experiment/result lineage, chronological development and
-walk-forward controls, locked-OOS protection, cost stress, statistical
-uncertainty helpers, and evidence classification are implemented. No versioned
+Immutable dataset/experiment/result lineage, fail-closed qualification,
+candidate/family lineage, chronological train/validation/test controls,
+locked-OOS protection, cost stress, deterministic Monte Carlo/FDR helpers, and
+machine-readable evidence/paper-only promotion review are implemented. No versioned
 historical market dataset is present in the repository, so the four baseline
 strategies have not been empirically evaluated and are INVALID / not evaluable;
 this is not a profitability claim or a strategy kill decision. See
-`docs/RESEARCH_VALIDATION.md`.
+`docs/RESEARCH_ENGINE.md` and `docs/RESEARCH_VALIDATION.md`.
 
 ## Phase 10 — Dashboard
 

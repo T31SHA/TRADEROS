@@ -22,9 +22,11 @@ executes a trade. These components are not validated production edges. Brokers,
 paper orders now require a Phase 7 approval and use an offline, durable
 SQLAlchemy paper engine. Live execution remains intentionally unimplemented.
 
-The Phase 9 framework locks temporal OOS evaluation from candidate selection,
-records immutable dataset/experiment/result lineage, reuses the Phase 3 causal
-backtester, and provides cost stress plus dependence-aware uncertainty helpers.
+The Phase 9 framework qualifies immutable datasets, locks temporal OOS
+evaluation from candidate selection, records hypothesis/candidate/family and
+experiment/result lineage, reuses the Phase 3 causal backtester, and provides
+cost stress, dependence-aware uncertainty, FDR controls, canonical evidence
+export, and paper-only promotion review.
 It does not claim a trading edge. See
 [`docs/RESEARCH_VALIDATION.md`](docs/RESEARCH_VALIDATION.md) for the evidence
 inventory and required data-validation gate.
@@ -72,6 +74,8 @@ by git; only safe placeholders belong in `.env.example`.
 See `ARCHITECTURE.md` for boundaries and dependency direction, `ROADMAP.md` for
 the delivery sequence, and the strategy, regime, and signal-fusion documents in
 `docs/` for implemented contracts and safety requirements.
+See [`docs/RESEARCH_ENGINE.md`](docs/RESEARCH_ENGINE.md) for the Phase 9
+lifecycle, methodology, and limitations.
 
 ## Development quality gates
 

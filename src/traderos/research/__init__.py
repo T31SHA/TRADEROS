@@ -2,11 +2,27 @@
 
 from traderos.research.analysis import (
     DecisionEvidence,
+    MonteCarloSummary,
+    benjamini_hochberg_adjusted_p_values,
     benjamini_yekutieli_adjusted_p_values,
     classify_evidence,
     moving_block_bootstrap_mean,
+    trade_path_monte_carlo,
 )
+from traderos.research.dataset import (
+    DatasetQualification,
+    DatasetQualificationStatus,
+    QualificationPolicy,
+    qualify_dataset,
+)
+from traderos.research.evidence import EvidencePackage
 from traderos.research.execution import execute_backtest
+from traderos.research.governance import (
+    CandidateStatus,
+    ResearchHypothesis,
+    ResearchWarning,
+    StrategyCandidate,
+)
 from traderos.research.models import (
     CostScenario,
     DatasetManifest,
@@ -23,12 +39,25 @@ from traderos.research.models import (
     WalkForwardFold,
     WalkForwardMode,
 )
+from traderos.research.promotion import (
+    PromotionDecision,
+    PromotionEvidence,
+    PromotionPolicy,
+    evaluate_promotion,
+)
 from traderos.research.registry import ExperimentRegistry, RegisteredExperiment
+from traderos.research.service import ResearchValidationEngine
+from traderos.research.validation import ChronologicalValidationProtocol, ValidationFold
 
 __all__ = [
+    "CandidateStatus",
     "CostScenario",
+    "ChronologicalValidationProtocol",
+    "DatasetQualification",
+    "DatasetQualificationStatus",
     "DatasetManifest",
     "DecisionEvidence",
+    "EvidencePackage",
     "ExperimentRegistry",
     "ExperimentResult",
     "ExperimentSpec",
@@ -43,8 +72,22 @@ __all__ = [
     "WalkForwardConfig",
     "WalkForwardFold",
     "WalkForwardMode",
+    "MonteCarloSummary",
+    "PromotionDecision",
+    "PromotionEvidence",
+    "PromotionPolicy",
+    "QualificationPolicy",
+    "ResearchHypothesis",
+    "ResearchValidationEngine",
+    "ResearchWarning",
+    "StrategyCandidate",
+    "ValidationFold",
+    "benjamini_hochberg_adjusted_p_values",
     "benjamini_yekutieli_adjusted_p_values",
     "classify_evidence",
+    "evaluate_promotion",
     "execute_backtest",
     "moving_block_bootstrap_mean",
+    "qualify_dataset",
+    "trade_path_monte_carlo",
 ]

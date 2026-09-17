@@ -231,6 +231,13 @@ on paper state, brokers, credentials, networks, or live trading. The current
 repository contains no versioned historical dataset, so Phase 9 includes no
 empirical performance or survival claim.
 
+Phase 9 also supplies fail-closed data qualification, immutable
+hypothesis/candidate/family lineage, chronological train/validation/test folds
+with documented purge/embargo, FDR controls, deterministic trade-path stress,
+canonical evidence export, and paper-only promotion review. It delegates
+execution/accounting to Phase 3 and records rather than duplicates Phase 5–8
+provenance. See `docs/RESEARCH_ENGINE.md`.
+
 ## Phase 0 scope
 
 Phase 0 established policy, package boundaries, configuration, logging, and

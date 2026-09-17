@@ -14,7 +14,10 @@ Testing is a release gate, not a postscript.
 
 The suite must explicitly test look-ahead bias, data leakage, duplicate orders,
 race conditions, stale data, risk-limit bypass, kill-switch behavior, position
-sizing, P&L, and timezone handling.
+sizing, P&L, and timezone handling. Phase 9 additionally requires fail-closed
+dataset qualification, hash-bound manifests, chronological/purged folds, OOS
+lock identity, candidate/family lineage, seed determinism, FDR accounting,
+data-only evidence export, and a paper-only promotion boundary.
 
 ## Local gate
 
