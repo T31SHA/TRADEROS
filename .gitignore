@@ -30,3 +30,6 @@ dist/
 *.sqlite3
 notebooks/.ipynb_checkpoints/
 experiments/artifacts/
+data/raw/
+data/normalized/
+data/manifests/

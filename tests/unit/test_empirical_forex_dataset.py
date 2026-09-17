@@ -1,0 +1,334 @@
+"""Offline adversarial coverage for the empirical Forex admission gate."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from traderos.data.calendars import ForexCalendar
+from traderos.data.dukascopy import (
+    DukascopyImportConfig,
+    DukascopySchemaError,
+    QuoteConvention,
+    TimestampSemantics,
+    iter_dukascopy_csv,
+    iter_normalized_market_bars,
+)
+from traderos.data.empirical import (
+    AdmissionPolicy,
+    AdmissionState,
+    RawArtifactMetadata,
+    RawArtifactStore,
+    admit_dukascopy_csv,
+    sha256_file,
+)
+from traderos.data.instruments import AssetClass, Instrument
+from traderos.data.timeframes import Timeframe
+
+BASE = datetime(2025, 1, 6, tzinfo=UTC)
+
+
+def _instrument() -> Instrument:
+    return Instrument(
+        canonical_symbol="EUR/USD",
+        asset_class=AssetClass.FOREX,
+        provider_symbols={"dukascopy": "EURUSD"},
+        base_currency="EUR",
+        quote_currency="USD",
+        trading_currency="USD",
+    )
+
+
+def _config(
+    timezone: str = "UTC", semantics: TimestampSemantics = TimestampSemantics.BAR_START
+) -> DukascopyImportConfig:
+    return DukascopyImportConfig(
+        instrument=_instrument(),
+        timeframe=Timeframe.M15,
+        source_symbol="EURUSD",
+        source_timezone=timezone,
+        timestamp_semantics=semantics,
+        quote_convention=QuoteConvention.BID,
+    )
+
+
+def _csv(rows: list[str]) -> str:
+    return "\n".join(
+        [
+            "timestamp,bid_open,bid_high,bid_low,bid_close,ask_open,ask_high,ask_low,ask_close,bid_volume,ask_volume",
+            *rows,
+            "",
+        ]
+    )
+
+
+def _metadata(path: Path, *, timezone: str = "UTC") -> RawArtifactMetadata:
+    digest, size = sha256_file(path)
+    return RawArtifactMetadata(
+        source="dukascopy",
+        source_symbol="EURUSD",
+        requested_start=BASE,
+        requested_end=BASE + timedelta(hours=1),
+        requested_timeframe="15m",
+        timezone=timezone,
+        original_filename=path.name,
+        download_timestamp=BASE + timedelta(days=1),
+        sha256=digest,
+        byte_size=size,
+        source_version="test-source-v1",
+    )
+
+
+def _admit(tmp_path: Path, rows: list[str], *, policy: AdmissionPolicy | None = None):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    source = tmp_path / "eurusd.csv"
+    source.write_text(_csv(rows), encoding="utf-8")
+    return admit_dukascopy_csv(
+        raw_paths=(source,),
+        raw_metadata=(_metadata(source),),
+        config=_config(),
+        calendar=ForexCalendar(),
+        policy=policy or AdmissionPolicy(require_bid_ask=True),
+        normalized_dir=tmp_path / "normalized",
+        manifest_dir=tmp_path / "manifests",
+        created_at=BASE + timedelta(days=2),
+        deterministic_test_fixture=True,
+    )
+
+
+def test_fixture_admission_preserves_quotes_audits_spread_and_is_immutable(tmp_path: Path) -> None:
+    admission = _admit(
+        tmp_path,
+        [
+            "2025-01-06T00:00:00,1.1000,1.1010,1.0990,1.1005,1.1002,1.1012,1.0992,1.1007,10,11",
+            "2025-01-06T00:15:00,1.1005,1.1015,1.1000,1.1010,1.1007,1.1017,1.1002,1.1012,12,13",
+        ],
+    )
+
+    assert admission.state is AdmissionState.DETERMINISTIC_TEST_FIXTURE
+    assert admission.quality_report.min_spread == admission.quality_report.max_spread
+    assert admission.quality_report.unexpected_gaps == 0
+    assert admission.manifest.timestamp_semantics is TimestampSemantics.BAR_START
+    assert admission.manifest_path.exists() and admission.normalized_path.exists()
+    assert "bid_open" in admission.normalized_path.read_text(encoding="utf-8")
+    loaded = tuple(
+        iter_normalized_market_bars(
+            admission.normalized_path,
+            config=_config(),
+            ingestion_timestamp=BASE,
+        )
+    )
+    assert len(loaded) == 2 and loaded[0].timestamp == BASE
+
+
+def test_raw_artifact_hash_is_content_addressed_and_mutation_changes_dataset_identity(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.csv"
+    source.write_text(_csv(["2025-01-06T00:00:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,"]), encoding="utf-8")
+    store = RawArtifactStore(tmp_path / "raw")
+    preserved, metadata = store.preserve(
+        source,
+        source="dukascopy",
+        source_symbol="EURUSD",
+        requested_start=BASE,
+        requested_end=BASE + timedelta(minutes=15),
+        requested_timeframe="15m",
+        timezone="UTC",
+        download_timestamp=BASE,
+    )
+    first = admit_dukascopy_csv(
+        raw_paths=(preserved,),
+        raw_metadata=(metadata,),
+        config=_config(),
+        calendar=ForexCalendar(),
+        policy=AdmissionPolicy(require_bid_ask=True),
+        normalized_dir=tmp_path / "normalized",
+        manifest_dir=tmp_path / "manifests",
+        created_at=BASE,
+        deterministic_test_fixture=True,
+    )
+    source.write_text(_csv(["2025-01-06T00:00:00,1,2,1,1.6,1.1,2.1,1.1,1.7,,"]), encoding="utf-8")
+    changed, changed_metadata = store.preserve(
+        source,
+        source="dukascopy",
+        source_symbol="EURUSD",
+        requested_start=BASE,
+        requested_end=BASE + timedelta(minutes=15),
+        requested_timeframe="15m",
+        timezone="UTC",
+        download_timestamp=BASE + timedelta(days=1),
+    )
+    second = admit_dukascopy_csv(
+        raw_paths=(changed,),
+        raw_metadata=(changed_metadata,),
+        config=_config(),
+        calendar=ForexCalendar(),
+        policy=AdmissionPolicy(require_bid_ask=True),
+        normalized_dir=tmp_path / "normalized",
+        manifest_dir=tmp_path / "manifests",
+        created_at=BASE,
+        deterministic_test_fixture=True,
+    )
+    assert first.manifest.dataset_id != second.manifest.dataset_id
+    assert first.normalized_path.exists()
+
+
+def test_future_append_and_timestamp_mutation_create_new_ids_without_altering_original(
+    tmp_path: Path,
+) -> None:
+    first = _admit(
+        tmp_path / "first",
+        ["2025-01-06T00:00:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,"],
+    )
+    appended = _admit(
+        tmp_path / "append",
+        [
+            "2025-01-06T00:00:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,",
+            "2025-01-06T00:15:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,",
+        ],
+    )
+    timestamp_changed = _admit(
+        tmp_path / "timestamp",
+        ["2025-01-06T00:15:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,"],
+    )
+    assert (
+        len(
+            {
+                first.manifest.dataset_id,
+                appended.manifest.dataset_id,
+                timestamp_changed.manifest.dataset_id,
+            }
+        )
+        == 3
+    )
+    assert first.normalized_path.exists()
+
+
+def test_source_adapter_maps_the_declared_side_to_existing_market_bar(tmp_path: Path) -> None:
+    source = tmp_path / "source.csv"
+    source.write_text(
+        _csv(["2025-01-06T00:00:00,1,2,1,1.5,1.1,2.1,1.1,1.6,10,11"]),
+        encoding="utf-8",
+    )
+    record = next(iter_dukascopy_csv(source, config=_config(), artifact_hash="a" * 64))
+    bar = record.to_market_bar(config=_config(), ingestion_timestamp=BASE)
+    assert (bar.open, bar.close, bar.bid, bar.ask) == (
+        Decimal("1"),
+        Decimal("1.5"),
+        Decimal("1.5"),
+        Decimal("1.6"),
+    )
+
+
+def test_bar_end_source_timestamp_is_normalized_to_phase_one_bar_start(tmp_path: Path) -> None:
+    source = tmp_path / "bar-end.csv"
+    source.write_text(_csv(["2025-01-06T00:15:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,"]), encoding="utf-8")
+    record = next(
+        iter_dukascopy_csv(
+            source,
+            config=_config(semantics=TimestampSemantics.BAR_END),
+            artifact_hash="a" * 64,
+        )
+    )
+    assert record.timestamp == BASE
+
+
+@pytest.mark.parametrize(
+    ("rows", "blocker"),
+    [
+        (
+            [
+                "2025-01-06T00:00:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,",
+                "2025-01-06T00:00:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,",
+            ],
+            "duplicate_timestamps",
+        ),
+        (["2025-01-06T00:00:00,1.2,1.1,1,1.05,1.3,1.4,1.1,1.2,,"], "material_ohlc_corruption"),
+        (["2025-01-06T00:00:00,1,2,1,1.7,1.1,2.1,1.1,1.6,,"], "crossed_market_corruption"),
+        (
+            [
+                "2025-01-06T00:00:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,",
+                "2025-01-06T00:30:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,",
+            ],
+            "unexpected_data_gaps",
+        ),
+    ],
+)
+def test_quality_failures_are_explicit_blockers(
+    tmp_path: Path, rows: list[str], blocker: str
+) -> None:
+    admission = _admit(tmp_path, rows)
+    assert blocker in admission.blockers
+
+
+def test_weekend_closure_is_not_a_data_gap(tmp_path: Path) -> None:
+    friday = "2025-01-03T21:45:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,"
+    sunday = "2025-01-05T22:00:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,"
+    admission = _admit(tmp_path, [friday, sunday])
+    assert admission.quality_report.unexpected_gaps == 0
+    assert admission.quality_report.expected_closures > 0
+
+
+def test_schema_drift_and_overlapping_artifacts_are_blocked(tmp_path: Path) -> None:
+    first = tmp_path / "one.csv"
+    second = tmp_path / "two.csv"
+    first.write_text(_csv(["2025-01-06T00:00:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,"]), encoding="utf-8")
+    second.write_text(
+        "timestamp,open,high,low,close\n2025-01-06T00:00:00,1,2,1,1.5\n", encoding="utf-8"
+    )
+    admission = admit_dukascopy_csv(
+        raw_paths=(first, second),
+        raw_metadata=(_metadata(first), _metadata(second)),
+        config=_config(),
+        calendar=ForexCalendar(),
+        policy=AdmissionPolicy(),
+        normalized_dir=tmp_path / "normalized",
+        manifest_dir=tmp_path / "manifests",
+        created_at=BASE,
+        deterministic_test_fixture=True,
+    )
+    assert {
+        "duplicate_timestamps",
+        "schema_drift",
+        "conflicting_overlapping_records",
+    } <= set(admission.blockers)
+
+
+def test_clean_nonfixture_can_be_empirically_qualified_only_by_the_gate(tmp_path: Path) -> None:
+    source = tmp_path / "eurusd.csv"
+    source.write_text(_csv(["2025-01-06T00:00:00,1,2,1,1.5,1.1,2.1,1.1,1.6,,"]), encoding="utf-8")
+    admission = admit_dukascopy_csv(
+        raw_paths=(source,),
+        raw_metadata=(_metadata(source),),
+        config=_config(),
+        calendar=ForexCalendar(),
+        policy=AdmissionPolicy(require_bid_ask=True),
+        normalized_dir=tmp_path / "normalized",
+        manifest_dir=tmp_path / "manifests",
+        created_at=BASE,
+        deterministic_test_fixture=False,
+    )
+    assert admission.state is AdmissionState.EMPIRICALLY_QUALIFIED_DATASET
+
+
+def test_unknown_timezone_and_malformed_schema_fail_closed(tmp_path: Path) -> None:
+    source = tmp_path / "bad.csv"
+    source.write_text(
+        "timestamp,open,high,low,close\n2025-01-06T00:00:00,1,2,1,1.5\n", encoding="utf-8"
+    )
+    with pytest.raises(DukascopySchemaError, match="Unknown source timezone"):
+        admit_dukascopy_csv(
+            raw_paths=(source,),
+            raw_metadata=(_metadata(source, timezone="Mars/Unknown"),),
+            config=_config("Mars/Unknown"),
+            calendar=ForexCalendar(),
+            policy=AdmissionPolicy(),
+            normalized_dir=tmp_path / "normalized",
+            manifest_dir=tmp_path / "manifests",
+            created_at=BASE,
+            deterministic_test_fixture=True,
+        )

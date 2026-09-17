@@ -110,3 +110,24 @@ architectural validation must not be confused with empirical strategy
 validation. Capacity, impact, historical
 universe, corporate-action, and calendar data sources are also not added here.
 Missing evidence stays `UNKNOWN`, `HOLD`, or `REJECT`.
+
+## Governed Forex dataset admission
+
+Before any Phase 9 experiment, a local Dukascopy-compatible artifact must pass:
+
+```text
+Acquire → Preserve immutable raw bytes → Normalize → Quality audit → Qualify
+```
+
+This has no automatic research/backtest operation. The audit gates source and
+coverage lineage, explicit timezone and timestamp semantics, duplicates and
+ordering, OHLC/prices, bid/ask integrity and spread, volume where available,
+calendar-aware missing intervals, artifact boundaries, schema drift, stale
+sequences, and suspicious jumps. It blocks unresolved timezone, missing
+lineage/coverage, unknown calendar, duplicate or non-monotonic timestamps,
+material OHLC defects, above-policy crossed quotes/gaps, and schema drift.
+No repairs, fill, interpolation, or manufactured quotes are permitted.
+
+At this commit no actual EUR/USD artifact is supplied, so the empirical
+qualification state remains `BLOCKED — artifact not supplied`. The local test
+fixtures exercise the gate only and are not empirical datasets.

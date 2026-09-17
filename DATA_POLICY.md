@@ -76,3 +76,20 @@ Lineage records include provider, symbol, timeframe, range, adjustment policy,
 configuration version, stable dataset version, quality status, ingestion runs,
 and quality events. Ingestion timestamps are operational metadata and therefore
 vary between runs; the dataset version excludes that non-deterministic field.
+
+## First governed empirical Forex dataset
+
+The Dukascopy-compatible importer is an offline import boundary, not a live
+provider: external data must first be preserved as a local immutable raw
+artifact. It requires an explicit source timezone and bar-start/bar-end
+declaration; it never assumes UTC or guesses timestamp semantics. UTC is the
+normalized system boundary and Phase 1's Forex weekend calendar determines
+expected closures. Missing in-session bars are data gaps; closed intervals are
+not silently filled or treated as corruption.
+
+The admission manifest binds hashes of all raw artifacts, source metadata,
+instrument, timeframe, quote convention, timestamp semantics, adjustment
+policy, calendar, quality policy/report, importer, canonical schema, and
+normalized content. A real dataset becomes empirical only when the explicit
+quality policy passes. Test fixtures are permanently marked
+`DETERMINISTIC_TEST_FIXTURE`; they can never support an empirical claim.

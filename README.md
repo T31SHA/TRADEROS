@@ -30,6 +30,12 @@ export, and paper-only promotion review.
 Historical research replay uses the canonical Phase 2 → 5 → 4 → 6 → 7 →
 Phase 8 sizing → Phase 3 path; architecture validation does not constitute
 empirical strategy validation without an eligible immutable dataset.
+
+The repository now includes an offline Dukascopy-compatible Forex data-admission
+gate: raw source bytes are preserved immutably, imported locally, normalized to
+UTC with declared bar semantics, quality-audited against the Forex calendar,
+and bound into a deterministic manifest before research can be eligible. No
+real EUR/USD artifact is present; fixtures remain explicitly non-empirical.
 It does not claim a trading edge. See
 [`docs/RESEARCH_VALIDATION.md`](docs/RESEARCH_VALIDATION.md) for the evidence
 inventory and required data-validation gate.

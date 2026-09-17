@@ -80,6 +80,12 @@ fusion, Phase 7 risk evaluation, Phase 8 pure sizing, and Phase 3 execution.
 This validates software boundaries with fixtures only; empirical eligibility
 remains blocked without production-quality immutable market data.
 
+An offline Dukascopy-compatible EUR/USD 15m acquisition/import and
+qualification gate is available for the first governed empirical dataset. It
+preserves raw artifacts, performs a UTC/calendar-aware quality audit, and emits
+immutable manifests. No real artifact is committed, and no empirical strategy
+experiment has run.
+
 ## Phase 10 — Dashboard
 
 Operational views for portfolio, markets, strategies, trades, research, and

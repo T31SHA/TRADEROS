@@ -62,3 +62,38 @@ with status and error text; credentials are never logged or persisted.
 No external provider adapter, production holiday-data source, Redis cache, API,
 or CLI is included in Phase 1. These are deliberate boundaries, not simulated
 capabilities.
+
+## Empirical historical-data admission gate
+
+The Phase 9 research framework now has a separate, local-only admission path
+for the first real Forex dataset. It does not download data and it does not run
+a backtest:
+
+```text
+Raw Source → Immutable Artifact → Dukascopy-compatible CSV Import
+→ canonical local JSONL / MarketBar mapping → Quality Audit
+→ immutable dataset manifest → qualification gate
+```
+
+`traderos.data.dukascopy` accepts only a local UTF-8 CSV with an explicitly
+declared source timezone, timestamp convention (`bar_start` or `bar_end`), and
+selected unmodified quote side. It preserves complete bid/ask OHLC and volumes
+in the normalized JSONL. Its `to_market_bar` mapping uses the configured side
+for the existing single-OHLC `MarketBar` contract and uses bid/ask closes only
+when supplied. No quote, spread, price, volume, or missing bar is fabricated.
+
+`RawArtifactStore` content-addresses files by streaming SHA-256 under
+`data/raw/dukascopy/<hash>/`; it never overwrites bytes. Metadata records
+source, optional source version, source symbol, requested range/timeframe,
+timezone, original name, byte size, hash, and UTC download time. Normalized
+content, quality report, and manifest are immutable paths in `data/normalized/`
+and `data/manifests/`. These local artifacts are git-ignored.
+
+The versioned `AdmissionPolicy` has explicit zero-default tolerances for
+duplicates, non-monotonic timestamps, OHLC/price/volume/crossed-quote defects,
+unexpected gaps, and schema drift. The audit reports coverage, gaps and Forex
+weekend closures, stale sequences, jumps, and exact spread statistics. It
+classifies rather than repairs. A changed raw byte, row, timestamp, price,
+metadata, policy, source convention, calendar, or schema produces a new
+dataset identity. The states are `DETERMINISTIC_TEST_FIXTURE`,
+`EMPIRICALLY_QUALIFIED_DATASET`, and `BLOCKED`.

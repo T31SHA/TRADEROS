@@ -238,6 +238,21 @@ canonical evidence export, and paper-only promotion review. It delegates
 execution/accounting to Phase 3 and records rather than duplicates Phase 5–8
 provenance. See `docs/RESEARCH_ENGINE.md`.
 
+The first empirical-data admission boundary is intentionally local and
+one-directional:
+
+```text
+Raw Source → Immutable Artifact → Import → Canonical MarketBar
+→ Quality Audit → Dataset Manifest → Qualification Gate
+```
+
+The Dukascopy-compatible CSV adapter has no network, broker, credential, or
+research dependency. Raw bytes are content-addressed before parsing; the
+normalized bid/ask record, deterministic audit, and manifest are immutable.
+Only a non-fixture dataset with complete explicit lineage and an accepted
+versioned policy is eligible for research. The current repository includes the
+gate but no empirical artifact.
+
 The historical canonical path is now a thin Phase 3 strategy adapter:
 `Phase 2 features → Phase 5 regime → Phase 4 strategies → Phase 6 fusion →
 Phase 7 firewall → Phase 8 pure sizing → Phase 3 orders/execution`. It owns no
