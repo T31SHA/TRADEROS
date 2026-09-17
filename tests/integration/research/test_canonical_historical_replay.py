@@ -3,6 +3,8 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from traderos.backtesting import BacktestConfig
 from traderos.backtesting.engine import BacktestEngine
 from traderos.data.bars import MarketBar
@@ -13,7 +15,7 @@ from traderos.data.timeframes import Timeframe
 from traderos.features import FeatureContext, FeatureRequest
 from traderos.paper import PaperExecutionConfig
 from traderos.regimes import EmaPercentileRegimeDetector
-from traderos.research.replay import CanonicalHistoricalReplay
+from traderos.research.replay import CanonicalHistoricalReplay, ReplayConfigurationError
 from traderos.risk import RiskFirewall, RiskFirewallParameters
 from traderos.signals import MajorityVoteFusionPolicy
 from traderos.strategies.base import RuleStrategy
@@ -30,9 +32,15 @@ BASE = datetime(2024, 1, 2, tzinfo=UTC)
 class _OnceLongStrategy(RuleStrategy):
     strategy_version = "1"
 
-    def __init__(self, strategy_id: str, decision_at: datetime) -> None:
+    def __init__(
+        self,
+        strategy_id: str,
+        decision_at: datetime,
+        direction: SignalDirection = SignalDirection.LONG,
+    ) -> None:
         self.strategy_id = strategy_id
         self._decision_at = decision_at
+        self._direction = direction
 
     @property
     def metadata(self) -> StrategyMetadata:
@@ -54,7 +62,7 @@ class _OnceLongStrategy(RuleStrategy):
     def on_bar(self, context: StrategyContext) -> StrategyResult:
         self._validate_context(context)
         direction = (
-            SignalDirection.LONG
+            self._direction
             if context.event_timestamp == self._decision_at
             else SignalDirection.HOLD
         )
@@ -93,13 +101,21 @@ def _bars(count: int = 70) -> tuple[MarketBar, ...]:
     )
 
 
-def _replay(*, reject: bool) -> tuple[CanonicalHistoricalReplay, object]:
+def _replay(
+    *,
+    reject: bool,
+    directions: tuple[SignalDirection, SignalDirection] = (
+        SignalDirection.LONG,
+        SignalDirection.LONG,
+    ),
+    maximum_quantity: Decimal = Decimal("1000"),
+) -> tuple[CanonicalHistoricalReplay, object]:
     bars = _bars()
     decision_at = bars[60].timestamp + Timeframe.H1.duration
     replay = CanonicalHistoricalReplay(
         strategies=(
-            _OnceLongStrategy("phase4_a", decision_at),
-            _OnceLongStrategy("phase4_b", decision_at),
+            _OnceLongStrategy("phase4_a", decision_at, directions[0]),
+            _OnceLongStrategy("phase4_b", decision_at, directions[1]),
         ),
         regime_detector=EmaPercentileRegimeDetector(),
         fusion_policy=MajorityVoteFusionPolicy(),
@@ -110,7 +126,7 @@ def _replay(*, reject: bool) -> tuple[CanonicalHistoricalReplay, object]:
         sizing_config=PaperExecutionConfig(
             quantity_increment=Decimal("1"),
             minimum_quantity=Decimal("1"),
-            maximum_quantity=Decimal("1000"),
+            maximum_quantity=maximum_quantity,
         ),
         account_id="research-fixture",
         account_currency="USD",
@@ -175,3 +191,61 @@ def test_canonical_replay_risk_veto_creates_no_phase3_order() -> None:
     assert rejected.risk_decision is not None and rejected.risk_decision.status.value == "reject"
     assert result.orders == ()
     assert result.fills == ()
+
+
+def test_canonical_replay_fusion_no_consensus_creates_no_order_or_fill() -> None:
+    replay, result = _replay(reject=False, directions=(SignalDirection.LONG, SignalDirection.SHORT))
+
+    rejected = next(
+        event
+        for event in replay.audit_events
+        if event.terminal_state == "FUSION_REJECTED" and event.detail == "no_consensus"
+    )
+    assert rejected.intent is not None and rejected.risk_decision is None
+    assert result.orders == ()
+    assert result.fills == ()
+
+
+def test_canonical_replay_rejects_invalid_configuration_and_oversized_sizing() -> None:
+    with pytest.raises(ReplayConfigurationError, match="requires at least"):
+        CanonicalHistoricalReplay(
+            strategies=(),
+            regime_detector=EmaPercentileRegimeDetector(),
+            fusion_policy=MajorityVoteFusionPolicy(),
+            risk_firewall=RiskFirewall(),
+            calendar=ForexCalendar(),
+            sizing_config=PaperExecutionConfig(),
+            account_id="a",
+            account_currency="USD",
+            starting_cash=Decimal("1"),
+        )
+    with pytest.raises(ReplayConfigurationError, match="account configuration"):
+        CanonicalHistoricalReplay(
+            strategies=(_OnceLongStrategy("a", BASE),),
+            regime_detector=EmaPercentileRegimeDetector(),
+            fusion_policy=MajorityVoteFusionPolicy(),
+            risk_firewall=RiskFirewall(),
+            calendar=ForexCalendar(),
+            sizing_config=PaperExecutionConfig(),
+            account_id="",
+            account_currency="USD",
+            starting_cash=Decimal("1"),
+        )
+    with pytest.raises(ReplayConfigurationError, match="unique"):
+        CanonicalHistoricalReplay(
+            strategies=(_OnceLongStrategy("a", BASE), _OnceLongStrategy("a", BASE)),
+            regime_detector=EmaPercentileRegimeDetector(),
+            fusion_policy=MajorityVoteFusionPolicy(),
+            risk_firewall=RiskFirewall(),
+            calendar=ForexCalendar(),
+            sizing_config=PaperExecutionConfig(),
+            account_id="a",
+            account_currency="USD",
+            starting_cash=Decimal("1"),
+        )
+    replay, result = _replay(reject=False, maximum_quantity=Decimal("1"))
+    rejected = next(
+        event for event in replay.audit_events if event.terminal_state == "SIZING_REJECTED"
+    )
+    assert rejected.risk_decision is not None
+    assert result.orders == ()

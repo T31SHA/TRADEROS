@@ -297,10 +297,7 @@ class CanonicalHistoricalReplay:
                 )
             )
             return ()
-        if context.bar.bid is None or context.bar.ask is None:
-            raise ReplayConfigurationError(
-                "approved risk decision lacks an executable bid/ask quote"
-            )
+        assert context.bar.bid is not None and context.bar.ask is not None
         try:
             sized = quantity_for_authorization(
                 decision=decision,
