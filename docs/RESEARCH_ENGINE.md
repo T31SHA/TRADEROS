@@ -37,6 +37,28 @@ predates the Phase 6/7 path, so results must state when they are strategy-level
 replays rather than fully fused/risk-gated portfolio replays. Phase 8 sizing
 and state are neither duplicated nor mutated by research.
 
+## Canonical historical replay
+
+`CanonicalHistoricalReplay` is the Phase 3 strategy-protocol adapter used for
+historical research. At each Phase 3 completed-bar decision event it executes:
+
+```text
+Phase 2 FeatureObservation → Phase 5 RegimeEngine → Phase 4 Strategy
+→ Phase 6 SignalFusionEngine → Phase 7 RiskFirewall
+→ Phase 8 quantity_for_authorization → Phase 3 Order → Phase 3 execution
+```
+
+It translates the read-only Phase 3 `StrategyContext` portfolio snapshot into
+the existing Phase 7 snapshot contract and derives a temporary Phase 8 sizing
+view solely for the pure `quantity_for_authorization` function. It neither
+contains a fill simulator nor calculates cash, exposure, P&L, fees, or equity.
+The Phase 3 engine continues to own all of those facts.
+
+Every decision records an audit event, including fusion, risk, and sizing
+rejections. A non-directional fused intent never reaches risk or Phase 3; a
+rejected risk decision never creates a Phase 3 order. The adapter uses exact
+Phase 3 completion/next-open boundaries without same-bar OHLC execution.
+
 ## Data, temporal, and OOS integrity
 
 `DatasetManifest` hashes canonical bar content, source, timeframe, adjustment
@@ -80,7 +102,8 @@ not authorize a paper order. `PROMOTE_TO_LIVE` does not exist.
 
 There is no production historical dataset or calibrated cost schedule in this
 repository, so Phase 9 makes no empirical profitability or deployability claim.
-A fully fused and risk-gated historical adapter needs an explicit future Phase
-3 integration, not a research-only substitute. Capacity, impact, historical
+A production-quality immutable historical dataset is still unavailable, so
+architectural validation must not be confused with empirical strategy
+validation. Capacity, impact, historical
 universe, corporate-action, and calendar data sources are also not added here.
 Missing evidence stays `UNKNOWN`, `HOLD`, or `REJECT`.

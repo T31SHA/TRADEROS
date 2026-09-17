@@ -29,6 +29,14 @@ class DatasetQualificationStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class ResearchDatasetEligibility(StrEnum):
+    """Separate architecture fixtures from data eligible for empirical claims."""
+
+    DETERMINISTIC_TEST_FIXTURE = "deterministic_test_fixture"
+    EMPIRICALLY_QUALIFIED_DATASET = "empirically_qualified_dataset"
+    BLOCKED = "blocked"
+
+
 @dataclass(frozen=True)
 class QualificationPolicy:
     """Versioned, explicit requirements rather than silent data repair."""
@@ -115,6 +123,75 @@ class DatasetQualification:
             "quality_events": list(self.quality_events),
             "reasons": list(self.reasons),
         }
+
+
+@dataclass(frozen=True)
+class DatasetEligibilityReport:
+    """Explicit empirical gate; fixtures can validate code but not strategies."""
+
+    qualification: DatasetQualification
+    eligibility: ResearchDatasetEligibility
+    source_version: str | None
+    calendar_identity: str | None
+    quote_convention: str | None
+    blockers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.eligibility is ResearchDatasetEligibility.EMPIRICALLY_QUALIFIED_DATASET and (
+            self.blockers or not self.source_version or not self.calendar_identity
+        ):
+            raise ResearchError(
+                "eligible empirical datasets require source, calendar, and no blockers"
+            )
+        if self.eligibility is ResearchDatasetEligibility.BLOCKED and not self.blockers:
+            raise ResearchError("blocked dataset eligibility requires explicit blockers")
+
+    @property
+    def empirically_eligible(self) -> bool:
+        return self.eligibility is ResearchDatasetEligibility.EMPIRICALLY_QUALIFIED_DATASET
+
+
+def assess_empirical_eligibility(
+    *,
+    qualification: DatasetQualification,
+    deterministic_test_fixture: bool,
+    source_version: str | None,
+    calendar_identity: str | None,
+    quote_convention: str | None = None,
+) -> DatasetEligibilityReport:
+    """Fail closed for missing immutable empirical-data metadata."""
+
+    if deterministic_test_fixture:
+        return DatasetEligibilityReport(
+            qualification,
+            ResearchDatasetEligibility.DETERMINISTIC_TEST_FIXTURE,
+            source_version,
+            calendar_identity,
+            quote_convention,
+        )
+    blockers: list[str] = []
+    if qualification.status is not DatasetQualificationStatus.QUALIFIED:
+        blockers.append("dataset_qualification_failed")
+    if not source_version:
+        blockers.append("source_version_missing")
+    if not calendar_identity:
+        blockers.append("calendar_identity_missing")
+    if qualification.manifest.equity_bias_unresolved:
+        blockers.append("survivorship_or_corporate_action_integrity_unverified")
+    if any(symbol for symbol in qualification.manifest.symbols) and quote_convention is None:
+        blockers.append("quote_or_price_convention_missing")
+    return DatasetEligibilityReport(
+        qualification,
+        (
+            ResearchDatasetEligibility.BLOCKED
+            if blockers
+            else ResearchDatasetEligibility.EMPIRICALLY_QUALIFIED_DATASET
+        ),
+        source_version,
+        calendar_identity,
+        quote_convention,
+        tuple(blockers),
+    )
 
 
 def qualify_dataset(
@@ -205,6 +282,9 @@ def qualify_dataset(
 __all__ = [
     "DatasetQualification",
     "DatasetQualificationStatus",
+    "DatasetEligibilityReport",
     "QualificationPolicy",
+    "ResearchDatasetEligibility",
+    "assess_empirical_eligibility",
     "qualify_dataset",
 ]

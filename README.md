@@ -27,6 +27,9 @@ evaluation from candidate selection, records hypothesis/candidate/family and
 experiment/result lineage, reuses the Phase 3 causal backtester, and provides
 cost stress, dependence-aware uncertainty, FDR controls, canonical evidence
 export, and paper-only promotion review.
+Historical research replay uses the canonical Phase 2 → 5 → 4 → 6 → 7 →
+Phase 8 sizing → Phase 3 path; architecture validation does not constitute
+empirical strategy validation without an eligible immutable dataset.
 It does not claim a trading edge. See
 [`docs/RESEARCH_VALIDATION.md`](docs/RESEARCH_VALIDATION.md) for the evidence
 inventory and required data-validation gate.

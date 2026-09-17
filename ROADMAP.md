@@ -74,6 +74,12 @@ strategies have not been empirically evaluated and are INVALID / not evaluable;
 this is not a profitability claim or a strategy kill decision. See
 `docs/RESEARCH_ENGINE.md` and `docs/RESEARCH_VALIDATION.md`.
 
+Canonical architecture replay is also implemented: causal Phase 2 observations
+flow through Phase 5 regime detection, Phase 4 strategy decisions, Phase 6
+fusion, Phase 7 risk evaluation, Phase 8 pure sizing, and Phase 3 execution.
+This validates software boundaries with fixtures only; empirical eligibility
+remains blocked without production-quality immutable market data.
+
 ## Phase 10 — Dashboard
 
 Operational views for portfolio, markets, strategies, trades, research, and

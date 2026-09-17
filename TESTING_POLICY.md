@@ -18,6 +18,10 @@ sizing, P&L, and timezone handling. Phase 9 additionally requires fail-closed
 dataset qualification, hash-bound manifests, chronological/purged folds, OOS
 lock identity, candidate/family lineage, seed determinism, FDR accounting,
 data-only evidence export, and a paper-only promotion boundary.
+Canonical replay tests must additionally prove Phase 2 → 5 → 4 → 6 → 7 →
+Phase 8 sizing → Phase 3 timing, including a risk-veto path that creates no
+Phase 3 order. Deterministic fixtures validate architecture only and must not
+be represented as empirical market evidence.
 
 ## Local gate
 

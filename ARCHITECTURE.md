@@ -238,6 +238,11 @@ canonical evidence export, and paper-only promotion review. It delegates
 execution/accounting to Phase 3 and records rather than duplicates Phase 5–8
 provenance. See `docs/RESEARCH_ENGINE.md`.
 
+The historical canonical path is now a thin Phase 3 strategy adapter:
+`Phase 2 features → Phase 5 regime → Phase 4 strategies → Phase 6 fusion →
+Phase 7 firewall → Phase 8 pure sizing → Phase 3 orders/execution`. It owns no
+fill, portfolio, or accounting logic.
+
 ## Phase 0 scope
 
 Phase 0 established policy, package boundaries, configuration, logging, and
