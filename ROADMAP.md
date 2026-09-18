@@ -87,6 +87,14 @@ emits immutable manifests. Existing aggregated v1/v2 artifacts remain
 immutable compatibility inputs but are not canonical. No real tick artifact is
 committed, and no empirical strategy experiment has run.
 
+An offline Twelve Data EUR/USD M15 OHLCV parser and provider-neutral admission
+path is also available. It accepts only caller-supplied immutable local CSV
+artifacts, preserves source volume semantics, records unavailable bid/ask and
+spread, and keeps all cost assumptions outside source data. No Twelve Data
+artifact is present in this repository yet, so no empirical qualification or
+strategy result is claimed. Dukascopy and Twelve Data remain separate datasets;
+the optional overlapping-close report is data-quality evidence only.
+
 ## Phase 10 — Dashboard
 
 Operational views for portfolio, markets, strategies, trades, research, and

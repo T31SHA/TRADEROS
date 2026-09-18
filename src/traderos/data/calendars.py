@@ -83,17 +83,15 @@ class ForexCalendar:
         )
 
 
-class DukascopyForexCalendar(ForexCalendar):
-    """Dukascopy EUR/USD weekly session with an explicit DST timezone.
+class _NewYorkForexSessionCalendar(ForexCalendar):
+    """A versioned 17:00 America/New_York weekly Forex session.
 
-    Dukascopy's GMT session boundary is 21:00 during summer time and 22:00
-    during winter time.  The documented 17:00 Eastern weekly boundary maps to
-    those UTC instants through the IANA ``America/New_York`` rules.  The
-    original :class:`ForexCalendar` remains unchanged for backward-compatible
-    Phase 1 behavior; this calendar is an explicit empirical-source version.
+    The provider-specific subclasses below deliberately carry separate
+    identities.  A calendar is not reused across providers merely because the
+    wall-clock session happens to match.
     """
 
-    calendar_id = "dukascopy-forex-utc-session-v1"
+    calendar_id = "unversioned-new-york-forex-session"
     _timezone = ZoneInfo("America/New_York")
     _session_boundary = time(17, 0)
 
@@ -107,6 +105,25 @@ class DukascopyForexCalendar(ForexCalendar):
         if local_timestamp.weekday() == 4:  # Friday, closes at 17:00 local
             return local_time < self._session_boundary
         return True
+
+
+class DukascopyForexCalendar(_NewYorkForexSessionCalendar):
+    """Dukascopy's explicitly versioned EUR/USD weekly session."""
+
+    calendar_id = "dukascopy-forex-utc-session-v1"
+
+
+class TwelveDataForexCalendar(_NewYorkForexSessionCalendar):
+    """Conservative Twelve Data Forex session assumption for OHLC admission.
+
+    Twelve Data documents its Forex aggregate as 24/7, while the supplied
+    historical OHLCV artifact is expected to represent the conventional FX
+    weekend closure.  This explicit identity keeps that assumption auditable;
+    it must be revisited if an acquired artifact demonstrates different
+    published session semantics.  It is not the Dukascopy calendar identity.
+    """
+
+    calendar_id = "twelve-data-forex-utc-session-v1"
 
 
 class UsEquityCalendar:
@@ -186,6 +203,7 @@ __all__ = [
     "DukascopyForexCalendar",
     "ForexCalendar",
     "MarketCalendar",
+    "TwelveDataForexCalendar",
     "UsEquityCalendar",
     "calendar_for",
 ]

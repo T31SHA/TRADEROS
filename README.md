@@ -31,13 +31,14 @@ Historical research replay uses the canonical Phase 2 → 5 → 4 → 6 → 7 �
 Phase 8 sizing → Phase 3 path; architecture validation does not constitute
 empirical strategy validation without an eligible immutable dataset.
 
-The repository now includes an offline Dukascopy-compatible Forex data-admission
-gate: raw source bytes are preserved immutably, imported locally, normalized to
-UTC with declared timestamp format and bar semantics, quality-audited against
-the Forex calendar, and bound into a deterministic manifest before research can
-be eligible. A real local EUR/USD bid-only artifact may be admitted with
-`scripts/admit_real_dukascopy.py`; it is not committed, and no empirical
-strategy experiment or qualification claim is made here. See
+The repository includes offline Dukascopy tick and Twelve Data OHLCV Forex
+data-admission gates: raw source bytes are preserved immutably, imported
+locally, normalized to UTC with declared timestamp format and bar semantics,
+quality-audited against an explicit Forex calendar, and bound into a
+deterministic manifest before research can be eligible. Twelve Data is an
+independent OHLCV research source; Dukascopy remains the bid/ask, spread, and
+microstructure source. The local runners never download or run strategies, and
+no source is selected by backtest performance. See
 [`docs/RESEARCH_VALIDATION.md`](docs/RESEARCH_VALIDATION.md) for the evidence
 inventory and required data-validation gate.
 

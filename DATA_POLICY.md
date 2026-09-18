@@ -107,3 +107,34 @@ content. The prior aggregated v1/v2 artifacts remain immutable compatibility
 inputs but are not canonical empirical datasets. A real dataset becomes
 empirical only when the explicit quality policy passes. Test fixtures remain
 `DETERMINISTIC_TEST_FIXTURE` and cannot support an empirical claim.
+
+Twelve Data is an independent OHLCV research source and is never merged with
+Dukascopy ticks or Dukascopy-derived M15 bars. The caller downloads bounded
+`EUR/USD`, `15min`, UTC CSV artifacts outside TRADEROS, preserves each exact
+raw response with `RawArtifactStore`, and then invokes the offline
+`traderos.data.twelvedata` parser and the same provider-neutral admission gate.
+The governed interpretation is `TimestampFormat=ISO_8601`,
+`TimestampSemantics=BAR_START`, and explicit UTC. Naive or non-UTC timestamps,
+schema drift, duplicate/overlapping conflicts, missing active-session bars,
+unknown gaps, stale sequences, suspicious jumps, invalid/nonpositive/nonfinite
+prices, and volume anomalies remain quality findings; no rows are sorted,
+filled, repaired, or quantized.
+
+The Twelve Data calendar identity is
+`twelve-data-forex-utc-session-v1`, separate from
+`dukascopy-forex-utc-session-v1`. It represents the conventional FX weekend
+closure as an explicit, auditable admission assumption; acquired artifacts must
+be reviewed against the provider's actual published session behavior. Weekend
+absence is therefore expected only when this calendar supports it, while
+unexpected active-session gaps block admission.
+
+Twelve Data bars preserve source-provided Forex volume when present. Missing
+volume is represented as unavailable and is governed by policy; it is never
+described as centralized exchange volume. Bid/ask OHLC and spread observations
+are unavailable. Historical execution realism must use a separate explicit
+transaction-cost scenario with recorded `cost_model_id`, `cost_model_version`,
+and assumptions; source OHLCV is not historical spread evidence.
+
+An optional close comparison may report Twelve Data versus Dukascopy-derived
+close differences at overlapping timestamps. It is a data-quality report only,
+never a merged dataset or a source-shopping/backtest selection mechanism.

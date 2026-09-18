@@ -1,17 +1,18 @@
 """Provider-agnostic market-data domain and ingestion services."""
 
 from traderos.data.bars import BarCandidate, MarketBar
-from traderos.data.calendars import DukascopyForexCalendar
+from traderos.data.calendars import DukascopyForexCalendar, TwelveDataForexCalendar
+from traderos.data.comparison import CloseComparisonReport, compare_close_series
 from traderos.data.dukascopy import (
     DukascopyImportConfig,
     QuoteConvention,
-    TimestampFormat,
-    TimestampSemantics,
 )
 from traderos.data.empirical import (
     AdmissionPolicy,
     AdmissionState,
     DatasetAdmission,
+    EmpiricalOHLCVRecord,
+    OHLCVAdmissionConfig,
     RawArtifactStore,
     TickArtifactMetadata,
     TickDatasetAdmission,
@@ -20,8 +21,11 @@ from traderos.data.empirical import (
     TickRawArtifactMetadata,
     admit_dukascopy_csv,
     admit_dukascopy_ticks,
+    admit_ohlcv_csv,
+    iter_normalized_ohlcv_records,
 )
 from traderos.data.instruments import AssetClass, Instrument
+from traderos.data.temporal import TimestampFormat, TimestampSemantics
 from traderos.data.ticks import (
     DukascopyTick,
     DukascopyTickImportConfig,
@@ -41,6 +45,14 @@ from traderos.data.ticks import (
     validate_ticks,
 )
 from traderos.data.timeframes import Timeframe
+from traderos.data.twelvedata import (
+    TwelveDataImportConfig,
+    TwelveDataSchemaError,
+    admit_twelve_data_csv,
+    instrument_eurusd,
+    iter_twelve_data_csv,
+    twelve_data_csv_schema,
+)
 
 __all__ = [
     "AdmissionPolicy",
@@ -48,14 +60,20 @@ __all__ = [
     "AssetClass",
     "BarCandidate",
     "DatasetAdmission",
+    "EmpiricalOHLCVRecord",
     "DukascopyTick",
     "DukascopyForexCalendar",
+    "TwelveDataForexCalendar",
     "DukascopyImportConfig",
     "DukascopyTickImportConfig",
     "Instrument",
     "MarketBar",
     "QuoteConvention",
     "RawArtifactStore",
+    "OHLCVAdmissionConfig",
+    "CloseComparisonReport",
+    "TwelveDataImportConfig",
+    "TwelveDataSchemaError",
     "TickAggregationPolicy",
     "TickAggregationResult",
     "TickAggregator",
@@ -73,9 +91,16 @@ __all__ = [
     "TimestampFormat",
     "TimestampSemantics",
     "admit_dukascopy_ticks",
+    "admit_ohlcv_csv",
+    "admit_twelve_data_csv",
     "aggregate_ticks",
     "admit_dukascopy_csv",
     "iter_dukascopy_ticks",
+    "iter_normalized_ohlcv_records",
+    "iter_twelve_data_csv",
+    "twelve_data_csv_schema",
+    "compare_close_series",
+    "instrument_eurusd",
     "iter_normalized_tick_bars",
     "iter_normalized_tick_market_bars",
     "normalize_tick_timestamp",

@@ -14,10 +14,10 @@ import json
 import os
 import shutil
 import tempfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
-from decimal import Decimal, localcontext
+from decimal import Decimal, InvalidOperation, localcontext
 from enum import StrEnum
 from pathlib import Path
 from statistics import median
@@ -29,14 +29,13 @@ from traderos.data.dukascopy import (
     DukascopyQuoteRecord,
     DukascopySchemaError,
     QuoteConvention,
-    TimestampFormat,
-    TimestampSemantics,
     dukascopy_csv_schema,
     iter_dukascopy_csv,
     iter_normalized_quote_records,
 )
-from traderos.data.instruments import AssetClass
+from traderos.data.instruments import AssetClass, Instrument
 from traderos.data.lineage import AdjustmentPolicy
+from traderos.data.temporal import TimestampFormat, TimestampSemantics
 from traderos.data.ticks import (
     DukascopyTickImportConfig,
     TickAggregationPolicy,
@@ -51,6 +50,8 @@ from traderos.data.timeframes import Timeframe
 
 CANONICAL_SCHEMA_VERSION = "empirical-forex-jsonl-v2"
 INGESTION_VERSION = "dukascopy-local-import-v3"
+OHLCV_CANONICAL_SCHEMA_VERSION = "empirical-forex-ohlcv-jsonl-v1"
+OHLCV_INGESTION_VERSION = "provider-neutral-ohlcv-local-import-v1"
 
 
 class GapClassification(StrEnum):
@@ -63,6 +64,54 @@ class AdmissionState(StrEnum):
     DETERMINISTIC_TEST_FIXTURE = "deterministic_test_fixture"
     EMPIRICALLY_QUALIFIED_DATASET = "empirically_qualified_dataset"
     BLOCKED = "blocked"
+
+
+@dataclass(frozen=True)
+class EmpiricalOHLCVRecord:
+    """Provider-neutral bar record emitted by a source-specific parser."""
+
+    timestamp: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal | None
+    artifact_hash: str
+    row_number: int
+
+    def canonical(self) -> dict[str, str | int | None]:
+        return {
+            "timestamp": self.timestamp.isoformat(),
+            "open": str(self.open),
+            "high": str(self.high),
+            "low": str(self.low),
+            "close": str(self.close),
+            "volume": str(self.volume) if self.volume is not None else None,
+            "raw_artifact_hash": self.artifact_hash,
+            "raw_row_number": self.row_number,
+        }
+
+
+@dataclass(frozen=True)
+class OHLCVAdmissionConfig:
+    """Provider-neutral interpretation for a local OHLCV artifact."""
+
+    instrument: Instrument
+    timeframe: Timeframe
+    source: str
+    source_symbol: str
+    source_timezone: str
+    timestamp_format: TimestampFormat
+    timestamp_semantics: TimestampSemantics
+    volume_semantics: str
+    source_version: str | None = None
+    artifact_timeframe: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.source.strip() or not self.source_symbol.strip():
+            raise ValueError("source and source symbol must not be blank")
+        if not self.source_timezone.strip() or not self.volume_semantics.strip():
+            raise ValueError("source timezone and volume semantics must not be blank")
 
 
 @dataclass(frozen=True)
@@ -189,6 +238,7 @@ class AdmissionPolicy:
     require_bid_ask: bool = False
     max_active_session_zero_volume: int = 0
     max_invalid_ticks: int = 0
+    require_volume: bool = False
 
     def __post_init__(self) -> None:
         if not self.policy_id.strip() or not self.policy_version.strip():
@@ -230,6 +280,7 @@ class AdmissionPolicy:
                 "require_bid_ask": self.require_bid_ask,
                 "max_active_session_zero_volume": self.max_active_session_zero_volume,
                 "max_invalid_ticks": self.max_invalid_ticks,
+                "require_volume": self.require_volume,
             }
         )
 
@@ -277,6 +328,7 @@ class DatasetQualityReport:
     flat_zero_volume_count: int = 0
     raw_row_count: int = 0
     normalized_row_count: int = 0
+    volume_unavailable_count: int = 0
 
     def canonical(self) -> dict[str, object]:
         values = asdict(self)
@@ -310,7 +362,7 @@ class EmpiricalDatasetManifest:
     timestamp_format: TimestampFormat
     timestamp_semantics: TimestampSemantics
     timezone: str
-    quote_convention: QuoteConvention
+    quote_convention: QuoteConvention | None
     adjustment_policy: AdjustmentPolicy
     calendar_id: str
     quality_report_hash: str
@@ -323,6 +375,11 @@ class EmpiricalDatasetManifest:
     price_tick_size: Decimal | None = None
     quantization_policy_id: str = "dukascopy-fixed-price-quantization"
     quantization_policy_version: str = "v1"
+    source_mode: str | None = None
+    price_sides: str | None = None
+    volume_sides: str | None = None
+    volume_semantics: str | None = None
+    quote_configuration: str | None = None
 
     def canonical(self) -> dict[str, object]:
         return {
@@ -338,7 +395,9 @@ class EmpiricalDatasetManifest:
             "timestamp_format": self.timestamp_format.value,
             "timestamp_semantics": self.timestamp_semantics.value,
             "timezone": self.timezone,
-            "quote_convention": self.quote_convention.value,
+            "quote_convention": (
+                self.quote_convention.value if self.quote_convention is not None else None
+            ),
             "adjustment_policy": self.adjustment_policy.value,
             "calendar_id": self.calendar_id,
             "quality_report_hash": self.quality_report_hash,
@@ -353,6 +412,11 @@ class EmpiricalDatasetManifest:
             ),
             "quantization_policy_id": self.quantization_policy_id,
             "quantization_policy_version": self.quantization_policy_version,
+            "source_mode": self.source_mode,
+            "price_sides": self.price_sides,
+            "volume_sides": self.volume_sides,
+            "volume_semantics": self.volume_semantics,
+            "quote_configuration": self.quote_configuration,
         }
 
 
@@ -1137,6 +1201,391 @@ def _timeframe_for_duration(duration: timedelta) -> Timeframe:
 
 
 # ---------------------------------------------------------------------------
+# Provider-neutral OHLCV empirical admission
+
+
+def _write_ohlcv_record(handle: _TextWriter, row: EmpiricalOHLCVRecord) -> str:
+    encoded = json.dumps(row.canonical(), sort_keys=True, separators=(",", ":")) + "\n"
+    handle.write(encoded)
+    return encoded
+
+
+def iter_normalized_ohlcv_records(path: Path) -> Iterable[EmpiricalOHLCVRecord]:
+    """Read canonical provider-neutral OHLCV JSONL without source access."""
+
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            try:
+                payload = json.loads(line)
+                timestamp = datetime.fromisoformat(str(payload["timestamp"]))
+                if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                    raise ValueError("normalized timestamp is naive")
+                if timestamp.utcoffset() != timedelta(0):
+                    raise ValueError("normalized timestamp is not UTC")
+                yield EmpiricalOHLCVRecord(
+                    timestamp=timestamp,
+                    open=Decimal(str(payload["open"])),
+                    high=Decimal(str(payload["high"])),
+                    low=Decimal(str(payload["low"])),
+                    close=Decimal(str(payload["close"])),
+                    volume=(
+                        Decimal(str(payload["volume"]))
+                        if payload["volume"] is not None
+                        else None
+                    ),
+                    artifact_hash=str(payload["raw_artifact_hash"]),
+                    row_number=int(payload["raw_row_number"]),
+                )
+            except (KeyError, TypeError, ValueError, InvalidOperation, json.JSONDecodeError) as exc:
+                raise ValueError(f"normalized OHLCV row {line_number} is malformed") from exc
+
+
+def _ohlcv_quality_report(
+    rows: Iterable[EmpiricalOHLCVRecord],
+    *,
+    config: OHLCVAdmissionConfig,
+    calendar: MarketCalendar,
+    policy: AdmissionPolicy,
+    schema_drift_count: int,
+    expected_start: datetime,
+    expected_end: datetime,
+) -> DatasetQualityReport:
+    timestamps: set[datetime] = set()
+    overlap_values: dict[datetime, tuple[Decimal, Decimal, Decimal, Decimal, Decimal | None]] = {}
+    duplicates = non_monotonic = conflicts = 0
+    invalid = nonpositive = nonfinite = volume_anomalies = 0
+    zero_volume = active_zero = closure_zero = unknown_zero = 0
+    volume_unavailable = flat = flat_zero = suspicious = stale = 0
+    stale_run = 1
+    row_count = 0
+    prior: EmpiricalOHLCVRecord | None = None
+    coverage_start: datetime | None = None
+    coverage_end: datetime | None = None
+    actual_timestamps: set[datetime] = set()
+
+    for row in rows:
+        row_count += 1
+        actual_timestamps.add(row.timestamp)
+        coverage_start = (
+            row.timestamp if coverage_start is None else min(coverage_start, row.timestamp)
+        )
+        coverage_end = (
+            row.timestamp if coverage_end is None else max(coverage_end, row.timestamp)
+        )
+        if row.timestamp in timestamps:
+            duplicates += 1
+        timestamps.add(row.timestamp)
+        if prior is not None and row.timestamp <= prior.timestamp:
+            non_monotonic += 1
+
+        fingerprint = (row.open, row.high, row.low, row.close, row.volume)
+        prior_overlap = overlap_values.setdefault(row.timestamp, fingerprint)
+        if prior_overlap != fingerprint:
+            conflicts += 1
+
+        prices = (row.open, row.high, row.low, row.close)
+        if any(not value.is_finite() for value in prices):
+            nonfinite += 1
+        if any(value.is_finite() and value <= 0 for value in prices):
+            nonpositive += 1
+        if not all(value.is_finite() and value > 0 for value in prices) or not _ohlc_valid(prices):
+            invalid += 1
+
+        if row.volume is None:
+            volume_unavailable += 1
+        elif not row.volume.is_finite() or row.volume < 0:
+            volume_anomalies += 1
+        elif row.volume == 0:
+            zero_volume += 1
+            try:
+                open_at = calendar.is_open_at(row.timestamp)
+            except (TypeError, ValueError, OverflowError):
+                unknown_zero += 1
+            else:
+                if open_at:
+                    active_zero += 1
+                else:
+                    closure_zero += 1
+
+        if (
+            all(value.is_finite() for value in prices)
+            and prices[0] == prices[1] == prices[2] == prices[3]
+        ):
+            flat += 1
+            if row.volume == 0:
+                flat_zero += 1
+
+        if prior is not None and row.close.is_finite() and row.open.is_finite():
+            previous_valid = prior.close.is_finite() and prior.close > 0
+            current_valid = row.open > 0
+            if previous_valid and current_valid:
+                jump = abs(row.open - prior.close) / prior.close
+                if jump > policy.suspicious_jump_fraction:
+                    suspicious += 1
+                if row.close == prior.close:
+                    stale_run += 1
+                else:
+                    if stale_run >= policy.stale_sequence_length:
+                        stale += 1
+                    stale_run = 1
+        prior = row
+
+    if stale_run >= policy.stale_sequence_length and row_count:
+        stale += 1
+    coverage_end = coverage_end + config.timeframe.duration if coverage_end is not None else None
+    missing, closures, gaps, unknown = _gaps(
+        actual_timestamps,
+        calendar=calendar,
+        timeframe=config.timeframe.duration,
+        start=expected_start,
+        end=expected_end,
+    )
+    return DatasetQualityReport(
+        row_count=row_count,
+        coverage_start=coverage_start,
+        coverage_end=coverage_end,
+        duplicate_count=duplicates,
+        non_monotonic_count=non_monotonic,
+        invalid_ohlc_count=invalid,
+        crossed_bid_ask_count=0,
+        nonpositive_price_count=nonpositive,
+        volume_anomaly_count=volume_anomalies,
+        missing_intervals=missing,
+        expected_closures=closures,
+        unexpected_gaps=gaps,
+        unknown_gaps=unknown,
+        stale_sequences=stale,
+        suspicious_jumps=suspicious,
+        spread_count=0,
+        min_spread=None,
+        max_spread=None,
+        median_spread=None,
+        p95_spread=None,
+        p99_spread=None,
+        schema_drift_count=schema_drift_count,
+        conflicting_overlap_count=conflicts,
+        quote_side_complete_count=0,
+        calendar_id=calendar.calendar_id,
+        invalid_ohlc_before_normalization_count=invalid,
+        invalid_ohlc_after_normalization_count=invalid,
+        nonfinite_price_count=nonfinite,
+        zero_volume_bar_count=zero_volume,
+        active_session_zero_volume_count=active_zero,
+        expected_closure_bar_count=closure_zero,
+        unknown_zero_volume_count=unknown_zero,
+        flat_bar_count=flat,
+        flat_zero_volume_count=flat_zero,
+        raw_row_count=row_count,
+        normalized_row_count=row_count,
+        volume_unavailable_count=volume_unavailable,
+    )
+
+
+def _ohlcv_blockers(
+    report: DatasetQualityReport,
+    *,
+    config: OHLCVAdmissionConfig,
+    artifacts: Sequence[RawArtifactMetadata],
+    policy: AdmissionPolicy,
+    calendar: MarketCalendar,
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if not artifacts:
+        blockers.append("artifact_not_supplied")
+    if not report.row_count or report.coverage_start is None or report.coverage_end is None:
+        blockers.append("coverage_missing")
+    checks = (
+        (report.duplicate_count, policy.max_duplicate_timestamps, "duplicate_timestamps"),
+        (
+            report.non_monotonic_count,
+            policy.max_non_monotonic_timestamps,
+            "non_monotonic_timestamps",
+        ),
+        (report.invalid_ohlc_count, policy.max_invalid_ohlc, "invalid_ohlc"),
+        (report.nonpositive_price_count, policy.max_nonpositive_prices, "nonpositive_prices"),
+        (report.volume_anomaly_count, policy.max_volume_anomalies, "volume_anomalies"),
+        (report.unexpected_gaps, policy.max_unexpected_gaps, "unexpected_gaps"),
+        (report.schema_drift_count, policy.max_schema_drift, "schema_drift"),
+        (
+            report.active_session_zero_volume_count,
+            policy.max_active_session_zero_volume,
+            "active_session_zero_volume",
+        ),
+    )
+    blockers.extend(name for actual, allowed, name in checks if actual > allowed)
+    if report.nonfinite_price_count:
+        blockers.append("nonfinite_prices")
+    if report.unknown_gaps:
+        blockers.append("unknown_gaps")
+    if policy.require_bid_ask:
+        blockers.append("bid_ask_unavailable")
+    if policy.require_volume and report.volume_unavailable_count:
+        blockers.append("volume_unavailable")
+    if (
+        policy.max_suspicious_jumps is not None
+        and report.suspicious_jumps > policy.max_suspicious_jumps
+    ):
+        blockers.append("suspicious_jumps")
+    if report.conflicting_overlap_count:
+        blockers.append("conflicting_overlapping_records")
+    if config.instrument.asset_class is not AssetClass.FOREX or not calendar.calendar_id.startswith(
+        ("twelve-data-forex-", "dukascopy-forex-", "forex-")
+    ):
+        blockers.append("unknown_or_incompatible_calendar")
+    return tuple(sorted(set(blockers)))
+
+
+def admit_ohlcv_csv(
+    *,
+    raw_paths: Iterable[Path],
+    raw_metadata: Iterable[RawArtifactMetadata],
+    config: OHLCVAdmissionConfig,
+    calendar: MarketCalendar,
+    policy: AdmissionPolicy,
+    normalized_dir: Path,
+    manifest_dir: Path,
+    created_at: datetime,
+    parser: Callable[[Path, str], Iterable[EmpiricalOHLCVRecord]],
+    schema_reader: Callable[[Path], tuple[str, ...]],
+    deterministic_test_fixture: bool = False,
+) -> DatasetAdmission:
+    """Admit locally preserved OHLCV artifacts through the common gate.
+
+    ``parser`` and ``schema_reader`` are source-specific callables supplied by
+    the adapter; this function never performs acquisition or provider logic.
+    """
+
+    require_utc(created_at)
+    paths = tuple(raw_paths)
+    artifacts = tuple(raw_metadata)
+    if not paths or len(paths) != len(artifacts):
+        raise ValueError("each OHLCV import path requires exactly one raw metadata record")
+    artifact_timeframe = config.artifact_timeframe or config.timeframe.value
+    if any(item.source != config.source for item in artifacts):
+        raise ValueError("raw artifact source does not match import configuration")
+    if any(item.requested_timeframe != artifact_timeframe for item in artifacts):
+        raise ValueError("raw artifact timeframe does not match import configuration")
+    if any(item.source_symbol != config.source_symbol for item in artifacts):
+        raise ValueError("raw artifact symbol does not match import configuration")
+    if any(item.timezone != config.source_timezone for item in artifacts):
+        raise ValueError("raw artifact timezone does not match import configuration")
+    if config.source_version and any(
+        item.source_version != config.source_version for item in artifacts
+    ):
+        raise ValueError("raw artifact source version does not match import configuration")
+
+    normalized_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", delete=False, dir=normalized_dir
+    ) as staged:
+        staged_path = Path(staged.name)
+        hasher = hashlib.sha256()
+        try:
+            for path, metadata in zip(paths, artifacts, strict=True):
+                actual_hash, actual_size = sha256_file(path)
+                if actual_hash != metadata.sha256 or actual_size != metadata.byte_size:
+                    raise ValueError("raw artifact bytes no longer match preserved metadata")
+                for row in parser(path, metadata.sha256):
+                    text = _write_ohlcv_record(staged, row)
+                    hasher.update(text.encode())
+        except (OSError, ValueError):
+            staged.close()
+            staged_path.unlink(missing_ok=True)
+            raise
+
+    schemas = {schema_reader(path) for path in paths}
+    report = _ohlcv_quality_report(
+        iter_normalized_ohlcv_records(staged_path),
+        config=config,
+        calendar=calendar,
+        policy=policy,
+        schema_drift_count=max(0, len(schemas) - 1),
+        expected_start=min(item.requested_start for item in artifacts),
+        expected_end=max(item.requested_end for item in artifacts),
+    )
+    quality_hash = report.hash
+    normalized_hash = hasher.hexdigest()
+    material = {
+        "source": config.source,
+        "source_mode": "ohlcv_bar",
+        "source_artifacts": [item.canonical() for item in artifacts],
+        "instrument": config.instrument.canonical_symbol,
+        "asset_class": config.instrument.asset_class.value,
+        "timeframe": config.timeframe.value,
+        "timestamp_format": config.timestamp_format.value,
+        "timestamp_semantics": config.timestamp_semantics.value,
+        "timezone": config.source_timezone,
+        "calendar_id": calendar.calendar_id,
+        "quality_report_hash": quality_hash,
+        "policy_identity": policy.identity,
+        "volume_semantics": config.volume_semantics,
+        "normalized_content_hash": normalized_hash,
+        "ingestion_version": OHLCV_INGESTION_VERSION,
+        "canonical_schema_version": OHLCV_CANONICAL_SCHEMA_VERSION,
+    }
+    dataset_hash = _hash_json(material)
+    manifest = EmpiricalDatasetManifest(
+        dataset_id=dataset_hash,
+        dataset_hash=dataset_hash,
+        source=config.source,
+        source_artifact_hashes=tuple(item.sha256 for item in artifacts),
+        instrument=config.instrument.canonical_symbol,
+        asset_class=config.instrument.asset_class.value,
+        timeframe=config.timeframe.value,
+        coverage_start=report.coverage_start,
+        coverage_end=report.coverage_end,
+        timestamp_format=config.timestamp_format,
+        timestamp_semantics=config.timestamp_semantics,
+        timezone=config.source_timezone,
+        quote_convention=None,
+        adjustment_policy=AdjustmentPolicy.RAW,
+        calendar_id=calendar.calendar_id,
+        quality_report_hash=quality_hash,
+        ingestion_version=OHLCV_INGESTION_VERSION,
+        canonical_schema_version=OHLCV_CANONICAL_SCHEMA_VERSION,
+        created_at=created_at,
+        artifact_metadata=artifacts,
+        policy_identity=policy.identity,
+        normalized_content_hash=normalized_hash,
+        source_mode="ohlcv_bar",
+        price_sides="ohlc",
+        volume_sides="source",
+        volume_semantics=config.volume_semantics,
+        quote_configuration="bid_ask_unavailable",
+    )
+    normalized_path = normalized_dir / f"{dataset_hash}.jsonl"
+    if normalized_path.exists():
+        if sha256_file(normalized_path)[0] != normalized_hash:
+            raise RuntimeError("immutable normalized dataset path has conflicting content")
+        staged_path.unlink(missing_ok=True)
+    else:
+        os.replace(staged_path, normalized_path)
+    report_path = manifest_dir / f"{dataset_hash}.quality.json"
+    manifest_path = manifest_dir / f"{dataset_hash}.json"
+    _write_immutable_json(report_path, report.canonical())
+    _write_immutable_json(manifest_path, manifest.canonical())
+    blockers = _ohlcv_blockers(
+        report, config=config, artifacts=artifacts, policy=policy, calendar=calendar
+    )
+    state = (
+        AdmissionState.DETERMINISTIC_TEST_FIXTURE
+        if deterministic_test_fixture
+        else AdmissionState.BLOCKED
+        if blockers
+        else AdmissionState.EMPIRICALLY_QUALIFIED_DATASET
+    )
+    return DatasetAdmission(
+        manifest,
+        report,
+        state,
+        blockers,
+        normalized_path,
+        manifest_path,
+        report_path,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Tick-source empirical admission
 
 TICK_CANONICAL_SCHEMA_VERSION = "empirical-forex-tick-m15-jsonl-v1"
@@ -1604,9 +2053,13 @@ __all__ = [
     "CANONICAL_SCHEMA_VERSION",
     "DatasetAdmission",
     "DatasetQualityReport",
+    "EmpiricalOHLCVRecord",
     "EmpiricalDatasetManifest",
     "GapClassification",
     "INGESTION_VERSION",
+    "OHLCVAdmissionConfig",
+    "OHLCV_CANONICAL_SCHEMA_VERSION",
+    "OHLCV_INGESTION_VERSION",
     "RawArtifactMetadata",
     "RawArtifactStore",
     "TICK_CANONICAL_SCHEMA_VERSION",
@@ -1618,5 +2071,7 @@ __all__ = [
     "TickRawArtifactMetadata",
     "admit_dukascopy_ticks",
     "admit_dukascopy_csv",
+    "admit_ohlcv_csv",
+    "iter_normalized_ohlcv_records",
     "sha256_file",
 ]

@@ -133,3 +133,44 @@ existing aggregated v1/v2 artifacts remain immutable but are not canonical.
 At this commit no actual EUR/USD tick artifact is supplied, so the empirical
 qualification state remains `BLOCKED — artifact not supplied`. The local test
 fixtures exercise the tick gate only and are not empirical datasets.
+
+### Twelve Data OHLCV research source
+
+Twelve Data is admitted through a separate offline path and is never mixed with
+Dukascopy data:
+
+```text
+external Twelve Data download → immutable raw CSV
+→ Twelve Data parser → provider-neutral OHLCV admission → manifest
+```
+
+The bounded target is EUR/USD, 15min, UTC, for the first one-month window
+2024-01-02 through 2024-02-02. The parser requires explicit
+`TimestampFormat=ISO_8601`, `TimestampSemantics=BAR_START`, and timezone UTC;
+naive or non-UTC timestamps are rejected. It maps `datetime` to `timestamp`,
+OHLC to canonical OHLC, and `volume` to source volume when present. It does not
+manufacture bid/ask, spread, or missing volume and does not apply the
+Dukascopy-specific quantization repair.
+
+`RawArtifactStore` records source, source symbol, requested range/timeframe,
+timezone, filename, download timestamp, SHA-256, and byte size for every
+bounded response. Every raw hash is bound into the immutable manifest.
+`TwelveDataForexCalendar` is an explicit versioned calendar identity rather
+than a silent reuse of the Dukascopy identity; the acquired artifact must be
+reviewed against its actual published session semantics. Missing weekend bars
+are expected only where that calendar classifies them as closures. Active-
+session gaps and all other admission blockers remain blocking.
+
+The admission report includes row count, coverage, duplicates, ordering,
+invalid/nonpositive/nonfinite OHLC, missing intervals, expected closures,
+unexpected/unknown gaps, stale sequences, suspicious jumps, schema drift,
+overlap conflicts, volume anomalies/unavailability, dataset ID, quality hash,
+qualification state, and blockers. The local runner is
+`scripts/admit_real_twelve_data.py`; it has no network or credential path.
+
+This source is for strategy research OHLCV, not execution microstructure.
+Dukascopy remains the source for bid/ask, spread, execution realism, and
+microstructure validation. Any later empirical backtest must record a separate
+explicit transaction-cost scenario with `cost_model_id`, `cost_model_version`,
+and assumptions. The optional close comparison is data-quality evidence only;
+it must not be used to choose the source by strategy performance.

@@ -110,3 +110,41 @@ never downloads or expands its interval. The states are
 The offline `scripts/diagnose_dukascopy_sessions.py` tool reports every missing
 run and groups active gaps and zero-volume bars by UTC hour, weekday, month,
 DST state, run length, and OHLC movement without modifying the raw artifact.
+
+## Twelve Data Forex OHLCV research admission
+
+Twelve Data is a separate OHLCV research source. Acquisition is external:
+
+```text
+Twelve Data EUR/USD 15min CSV → immutable local raw bytes
+→ source-specific CSV parser → provider-neutral OHLCV record
+→ existing empirical quality/admission gate
+```
+
+`traderos.data.twelvedata` accepts only local CSV artifacts. It requires the
+observed conceptual header `datetime,open,high,low,close` and optionally maps
+`volume`; header aliases are explicit and header signatures are recorded for
+schema-drift detection. Timestamps must be explicit UTC ISO-8601 values with
+BAR_START semantics. Naive values are rejected, rows are not sorted, and no
+OHLC repair or quantization adjustment is applied.
+
+The raw artifact metadata uses `source=twelve_data`, `source_symbol=EUR/USD`,
+`requested_timeframe=15min`, UTC, filename, download timestamp, SHA-256, and
+byte size. Multiple bounded artifacts may be preserved independently; every
+hash enters the immutable manifest. `TwelveDataForexCalendar` has its own
+versioned identity and conservatively models the conventional FX weekend
+closure pending validation of the acquired artifact's published session
+semantics.
+
+The resulting manifest explicitly records `source_mode=ohlcv_bar`,
+`quote_configuration=bid_ask_unavailable`, and
+`volume_semantics=source-provided Forex volume`. No bid/ask, spread, or
+centralized-volume observation is fabricated. Any backtest using this source
+must record an explicit transaction-cost model and version separately from the
+source data. `scripts/admit_real_twelve_data.py` performs preservation and
+admission only; it never downloads, calls a broker, or runs strategies.
+
+`compare_close_series` is an optional data-quality report for overlapping
+timestamps. It keeps Twelve Data and Dukascopy separate and reports absolute
+close-difference distribution metrics plus signed mean difference; it cannot
+select a source using strategy performance.

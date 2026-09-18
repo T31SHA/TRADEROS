@@ -20,22 +20,9 @@ from traderos.data.bars import MarketBar
 from traderos.data.errors import TimestampNormalizationError
 from traderos.data.instruments import Instrument
 from traderos.data.lineage import AdjustmentPolicy
+from traderos.data.temporal import TimestampFormat, TimestampSemantics
 from traderos.data.time import normalize_timestamp
 from traderos.data.timeframes import Timeframe
-
-
-class TimestampSemantics(StrEnum):
-    """The source meaning of its timestamp; it must be declared by the importer."""
-
-    BAR_START = "bar_start"
-    BAR_END = "bar_end"
-
-
-class TimestampFormat(StrEnum):
-    """The declared representation of timestamps in the source artifact."""
-
-    ISO_8601 = "iso_8601"
-    EPOCH_MILLISECONDS = "epoch_milliseconds"
 
 
 class QuoteConvention(StrEnum):
