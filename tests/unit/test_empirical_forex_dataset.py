@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from traderos.data.calendars import ForexCalendar
+from traderos.data.calendars import DukascopyForexCalendar, ForexCalendar, MarketCalendar
 from traderos.data.dukascopy import (
     DukascopyImportConfig,
     DukascopySchemaError,
@@ -109,6 +109,7 @@ def _admit(
     policy: AdmissionPolicy | None = None,
     config: DukascopyImportConfig | None = None,
     content: str | None = None,
+    calendar: MarketCalendar | None = None,
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
     source = tmp_path / "eurusd.csv"
@@ -117,7 +118,7 @@ def _admit(
         raw_paths=(source,),
         raw_metadata=(_metadata(source),),
         config=config or _config(),
-        calendar=ForexCalendar(),
+        calendar=calendar or ForexCalendar(),
         policy=policy or AdmissionPolicy(require_bid_ask=True),
         normalized_dir=tmp_path / "normalized",
         manifest_dir=tmp_path / "manifests",
@@ -609,6 +610,23 @@ def test_price_tick_and_quantization_policy_participate_in_dataset_identity(tmp_
     assert first.manifest.dataset_id != changed_policy.manifest.dataset_id
     assert first.manifest.price_tick_size == Decimal("0.00001")
     assert first.manifest.quantization_policy_version == "v1"
+
+
+def test_calendar_identity_participates_in_dataset_identity(tmp_path: Path) -> None:
+    row = "2025-01-06T00:00:00,1,2,1,1.5,1.0001,2.0001,1.0001,1.5001,,"
+    fixed = _admit(tmp_path / "fixed", [row], policy=AdmissionPolicy(require_bid_ask=True))
+    dukascopy = _admit(
+        tmp_path / "dukascopy",
+        [row],
+        policy=AdmissionPolicy(require_bid_ask=True),
+        calendar=DukascopyForexCalendar(),
+    )
+
+    assert fixed.manifest.calendar_id == "forex-weekday-utc-v1"
+    assert dukascopy.manifest.calendar_id == "dukascopy-forex-utc-session-v1"
+    assert fixed.quality_report.calendar_id == "forex-weekday-utc-v1"
+    assert dukascopy.quality_report.calendar_id == "dukascopy-forex-utc-session-v1"
+    assert fixed.manifest.dataset_id != dukascopy.manifest.dataset_id
 
 
 def test_quantization_is_not_applied_when_another_source_price_is_nonfinite(

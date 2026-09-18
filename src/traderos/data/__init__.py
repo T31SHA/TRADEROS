@@ -1,6 +1,7 @@
 """Provider-agnostic market-data domain and ingestion services."""
 
 from traderos.data.bars import BarCandidate, MarketBar
+from traderos.data.calendars import DukascopyForexCalendar
 from traderos.data.dukascopy import (
     DukascopyImportConfig,
     QuoteConvention,
@@ -23,6 +24,7 @@ __all__ = [
     "AssetClass",
     "BarCandidate",
     "DatasetAdmission",
+    "DukascopyForexCalendar",
     "DukascopyImportConfig",
     "Instrument",
     "MarketBar",

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from traderos.data.calendars import ForexCalendar
+from traderos.data.calendars import DukascopyForexCalendar
 from traderos.data.dukascopy import (
     DukascopyImportConfig,
     QuoteConvention,
@@ -63,7 +63,7 @@ def main() -> int:
         raw_paths=(preserved,),
         raw_metadata=(metadata,),
         config=config,
-        calendar=ForexCalendar(),
+        calendar=DukascopyForexCalendar(),
         policy=AdmissionPolicy(),
         normalized_dir=ROOT / "data/normalized",
         manifest_dir=ROOT / "data/manifests",

@@ -66,11 +66,13 @@ The PostgreSQL migration adds check constraints for prices, OHLC relationships,
 volume, bid/ask fields, and uniqueness, plus indexes for bounded series range
 queries. Raw and adjusted datasets are never overwritten into one another.
 
-`ForexCalendar` models the Phase 1 weekend closure from Friday 22:00 UTC to
-Sunday 22:00 UTC. `UsEquityCalendar` models regular US sessions in
-`America/New_York`; holidays and early closes are injected by the caller. No
-holiday list is silently hardcoded. The known limitation is that broker-specific
-Forex rollover and a production exchange-holiday source are not yet connected.
+`ForexCalendar` remains the Phase 1 fixed Friday 22:00 UTC to Sunday 22:00 UTC
+calendar. The empirical Dukascopy path uses the separately versioned
+`DukascopyForexCalendar` (`dukascopy-forex-utc-session-v1`), whose 17:00
+`America/New_York` weekly boundary resolves to 21:00 UTC in summer and 22:00
+UTC in winter through IANA timezone rules. `UsEquityCalendar` models regular US
+sessions in `America/New_York`; holidays and early closes are injected by the
+caller. No holiday list is silently hardcoded.
 
 Lineage records include provider, symbol, timeframe, range, adjustment policy,
 configuration version, stable dataset version, quality status, ingestion runs,

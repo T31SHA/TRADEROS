@@ -83,6 +83,32 @@ class ForexCalendar:
         )
 
 
+class DukascopyForexCalendar(ForexCalendar):
+    """Dukascopy EUR/USD weekly session with an explicit DST timezone.
+
+    Dukascopy's GMT session boundary is 21:00 during summer time and 22:00
+    during winter time.  The documented 17:00 Eastern weekly boundary maps to
+    those UTC instants through the IANA ``America/New_York`` rules.  The
+    original :class:`ForexCalendar` remains unchanged for backward-compatible
+    Phase 1 behavior; this calendar is an explicit empirical-source version.
+    """
+
+    calendar_id = "dukascopy-forex-utc-session-v1"
+    _timezone = ZoneInfo("America/New_York")
+    _session_boundary = time(17, 0)
+
+    def is_open_at(self, timestamp: datetime) -> bool:
+        local_timestamp = normalize_timestamp(timestamp).astimezone(self._timezone)
+        local_time = local_timestamp.time()
+        if local_timestamp.weekday() == 5:  # Saturday
+            return False
+        if local_timestamp.weekday() == 6:  # Sunday, opens at 17:00 local
+            return local_time >= self._session_boundary
+        if local_timestamp.weekday() == 4:  # Friday, closes at 17:00 local
+            return local_time < self._session_boundary
+        return True
+
+
 class UsEquityCalendar:
     """US regular-session calendar with injected holiday dates.
 
@@ -156,4 +182,10 @@ def calendar_for(
     return UsEquityCalendar(holidays=holidays, early_closes=early_closes)
 
 
-__all__ = ["ForexCalendar", "MarketCalendar", "UsEquityCalendar", "calendar_for"]
+__all__ = [
+    "DukascopyForexCalendar",
+    "ForexCalendar",
+    "MarketCalendar",
+    "UsEquityCalendar",
+    "calendar_for",
+]

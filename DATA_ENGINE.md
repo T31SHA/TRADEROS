@@ -108,6 +108,9 @@ or schema produces a new dataset identity. The local runner
 `scripts/admit_real_dukascopy.py` preserves and admits the local EUR/USD 15m
 bid-only Dukascopy-node artifact with `BAR_START`, UTC,
 `EPOCH_MILLISECONDS`, `QuoteConvention.BID`, `price_tick_size=0.00001`, and
-`forex-weekday-utc-v1`. Its admission result is an audit decision only; it
+`dukascopy-forex-utc-session-v1`. Its admission result is an audit decision only; it
 does not start empirical strategy research. The states are
 `DETERMINISTIC_TEST_FIXTURE`, `EMPIRICALLY_QUALIFIED_DATASET`, and `BLOCKED`.
+The offline `scripts/diagnose_dukascopy_sessions.py` tool reports every missing
+run and groups active gaps and zero-volume bars by UTC hour, weekday, month,
+DST state, run length, and OHLC movement without modifying the raw artifact.

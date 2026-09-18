@@ -193,6 +193,7 @@ class DatasetQualityReport:
     schema_drift_count: int
     conflicting_overlap_count: int
     quote_side_complete_count: int
+    calendar_id: str
     invalid_ohlc_before_normalization_count: int = 0
     invalid_ohlc_after_normalization_count: int = 0
     quantization_adjustment_count: int = 0
@@ -606,10 +607,10 @@ def _blockers(
         blockers.append("bid_ask_unavailable")
     if report.conflicting_overlap_count:
         blockers.append("conflicting_overlapping_records")
-    if (
-        config.instrument.asset_class is not AssetClass.FOREX
-        or calendar.calendar_id != "forex-weekday-utc-v1"
-    ):
+    if config.instrument.asset_class is not AssetClass.FOREX or calendar.calendar_id not in {
+        "forex-weekday-utc-v1",
+        "dukascopy-forex-utc-session-v1",
+    }:
         blockers.append("unknown_or_incompatible_calendar")
     return tuple(sorted(set(blockers)))
 
@@ -971,6 +972,7 @@ def _audit(
         schema_drift_count=schema_drift_count,
         conflicting_overlap_count=conflicting_overlaps,
         quote_side_complete_count=complete_quotes,
+        calendar_id=calendar.calendar_id,
         invalid_ohlc_before_normalization_count=invalid_before,
         invalid_ohlc_after_normalization_count=invalid_after,
         quantization_adjustment_count=len(adjustment_rows),
