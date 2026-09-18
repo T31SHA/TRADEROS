@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 from traderos.data.calendars import ForexCalendar
@@ -17,7 +18,7 @@ from traderos.data.instruments import AssetClass, Instrument
 from traderos.data.timeframes import Timeframe
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "data/raw/dukascopy/EURUSD/eurusd-m15-bid-2024-01-01-2025-01-01.csv"
+SOURCE = ROOT / "data/raw/dukascopy/EURUSD/v2/eurusd-m15-bid-2024-01-01-2025-01-01.csv"
 
 
 def main() -> int:
@@ -38,7 +39,7 @@ def main() -> int:
         requested_timeframe=Timeframe.M15.value,
         timezone="UTC",
         download_timestamp=capture_timestamp,
-        source_version=None,
+        source_version="dukascopy-node",
     )
     config = DukascopyImportConfig(
         instrument=Instrument(
@@ -55,7 +56,8 @@ def main() -> int:
         timestamp_semantics=TimestampSemantics.BAR_START,
         quote_convention=QuoteConvention.BID,
         timestamp_format=TimestampFormat.EPOCH_MILLISECONDS,
-        source_version=None,
+        source_version="dukascopy-node",
+        price_tick_size=Decimal("0.00001"),
     )
     admission = admit_dukascopy_csv(
         raw_paths=(preserved,),
@@ -78,9 +80,20 @@ def main() -> int:
         "duplicate_count",
         "non_monotonic_count",
         "invalid_ohlc_count",
+        "invalid_ohlc_before_normalization_count",
+        "invalid_ohlc_after_normalization_count",
+        "quantization_adjustment_count",
+        "quantization_adjustment_max_ticks",
         "crossed_bid_ask_count",
         "nonpositive_price_count",
+        "nonfinite_price_count",
         "volume_anomaly_count",
+        "zero_volume_bar_count",
+        "active_session_zero_volume_count",
+        "expected_closure_bar_count",
+        "unknown_zero_volume_count",
+        "flat_bar_count",
+        "flat_zero_volume_count",
         "missing_intervals",
         "unexpected_gaps",
         "expected_closures",
@@ -99,10 +112,17 @@ def main() -> int:
     print(f"normalized_content_hash={admission.manifest.normalized_content_hash}")
     print(f"dataset_id={admission.manifest.dataset_id}")
     print(f"quality_report_hash={report.hash}")
+    print(f"quantization_adjustment_rows={list(report.quantization_adjustment_rows)}")
+    print(f"price_tick_size={config.price_tick_size}")
+    print(f"quantization_policy_id={config.quantization_policy_id}")
+    print(f"quantization_policy_version={config.quantization_policy_version}")
     print(f"qualification_state={admission.state.value}")
     print(f"blockers={','.join(admission.blockers) if admission.blockers else 'none'}")
     print("quote_limitation=bid-only; ask OHLC and spread metrics unavailable")
-    print("volume_limitation=no volume column; bid_volume and ask_volume unavailable")
+    print(
+        "volume_limitation=source-provided Dukascopy volume mapped to bid_volume only; "
+        "not market-wide traded volume"
+    )
     return 0
 
 

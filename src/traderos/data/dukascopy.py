@@ -61,10 +61,19 @@ class DukascopyImportConfig:
     quote_convention: QuoteConvention
     source_version: str | None = None
     timestamp_format: TimestampFormat = TimestampFormat.ISO_8601
+    price_tick_size: Decimal | None = None
+    quantization_policy_id: str = "dukascopy-fixed-price-quantization"
+    quantization_policy_version: str = "v1"
 
     def __post_init__(self) -> None:
         if not self.source_symbol.strip() or not self.source_timezone.strip():
             raise ValueError("source symbol and source timezone must not be blank")
+        if self.price_tick_size is not None and (
+            not self.price_tick_size.is_finite() or self.price_tick_size <= 0
+        ):
+            raise ValueError("price tick size must be finite and positive")
+        if not self.quantization_policy_id.strip() or not self.quantization_policy_version.strip():
+            raise ValueError("quantization policy identity must not be blank")
 
 
 @dataclass(frozen=True)
@@ -84,6 +93,10 @@ class DukascopyQuoteRecord:
     ask_volume: Decimal | None
     artifact_hash: str
     row_number: int
+    quantization_adjusted: bool = False
+    quantization_adjustment_fields: tuple[str, ...] = ()
+    quantization_raw_values: tuple[tuple[str, str], ...] = ()
+    quantization_adjustment_max_ticks: int = 0
 
     def selected_ohlc(
         self, convention: QuoteConvention
@@ -166,6 +179,11 @@ def _columns(
     if result["timestamp"] is None:
         raise DukascopySchemaError("CSV artifact requires a timestamp column")
 
+    # Dukascopy-node emits a bare volume column for a selected BID download.
+    # It is deliberately not mapped to ask_volume, even when ASK is selected.
+    if convention is QuoteConvention.BID and result["bid_volume"] is None:
+        result["bid_volume"] = normalized.get("volume")
+
     # A single-side CSV is acceptable only when the caller explicitly selected
     # that side.  The source field is not duplicated into the missing side.
     selected = ("bid_open", "bid_high", "bid_low", "bid_close")
@@ -191,8 +209,8 @@ def _decimal(value: str | None, *, field: str, row_number: int) -> Decimal | Non
         parsed = Decimal(value.strip())
     except InvalidOperation as exc:
         raise DukascopySchemaError(f"row {row_number}: {field} is not a decimal") from exc
-    if not parsed.is_finite():
-        raise DukascopySchemaError(f"row {row_number}: {field} must be finite")
+    # Preserve non-finite source values for the quality gate to classify and
+    # block. They must not be silently converted into missing values.
     return parsed
 
 
@@ -344,6 +362,17 @@ def iter_normalized_quote_records(path: Path) -> Iterator[DukascopyQuoteRecord]:
                     },
                     artifact_hash=str(payload["raw_artifact_hash"]),
                     row_number=int(payload["raw_row_number"]),
+                    quantization_adjusted=bool(payload.get("quantization_adjusted", False)),
+                    quantization_adjustment_fields=tuple(
+                        str(item) for item in payload.get("quantization_adjustment_fields", [])
+                    ),
+                    quantization_raw_values=tuple(
+                        (str(key), str(value))
+                        for key, value in payload.get("quantization_raw_values", {}).items()
+                    ),
+                    quantization_adjustment_max_ticks=int(
+                        payload.get("quantization_adjustment_max_ticks", 0)
+                    ),
                 )
             except (KeyError, TypeError, ValueError, InvalidOperation, json.JSONDecodeError) as exc:
                 raise DukascopySchemaError(f"normalized row {line_number} is malformed") from exc

@@ -85,7 +85,18 @@ artifact. It requires an explicit source timezone and bar-start/bar-end
 declaration; it never assumes UTC or guesses timestamp semantics. UTC is the
 normalized system boundary and Phase 1's Forex weekend calendar determines
 expected closures. Missing in-session bars are data gaps; closed intervals are
-not silently filled or treated as corruption.
+not silently filled or treated as corruption. A present zero-volume flat bar is
+retained and classified against the Forex calendar. An active-session
+zero-volume bar is a blocker by default; a weekend/closed-session zero-volume
+bar is an expected closure observation. Dukascopy-node volume is preserved as
+source-provided Dukascopy volume and is not interpreted as centralized,
+market-wide traded volume.
+
+The importer may apply the explicit, versioned Dukascopy fixed-price
+quantization policy only to a finite, positive one-tick OHLC ordering inversion
+when `price_tick_size` is configured. The normalized record retains raw artifact
+hash and source row provenance, while the immutable raw CSV remains authoritative
+evidence. Larger or multi-field inconsistencies remain blocking quality errors.
 
 The admission manifest binds hashes of all raw artifacts, source metadata,
 instrument, timeframe, quote convention, timestamp semantics, adjustment

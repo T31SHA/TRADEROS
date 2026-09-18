@@ -80,9 +80,12 @@ declared source timezone, timestamp format (`iso_8601` or
 `epoch_milliseconds`), timestamp convention (`bar_start` or `bar_end`), and
 selected unmodified quote side. Epoch milliseconds are converted from integer
 milliseconds directly to UTC. It preserves complete bid/ask OHLC and volumes
-in the normalized JSONL. Its `to_market_bar` mapping uses the configured side
-for the existing single-OHLC `MarketBar` contract and uses bid/ask closes only
-when supplied. No quote, spread, price, volume, or missing bar is fabricated.
+in the normalized JSONL. Dukascopy-node's bare `volume` column maps to
+`bid_volume` only when `QuoteConvention.BID` is explicitly selected;
+`ask_volume` is never invented. Its `to_market_bar` mapping uses the configured
+side for the existing single-OHLC `MarketBar` contract and uses bid/ask closes
+only when supplied. No quote, spread, price, volume, or missing bar is
+fabricated.
 
 `RawArtifactStore` content-addresses files by streaming SHA-256 under
 `data/raw/dukascopy/<hash>/`; it never overwrites bytes. Metadata records
@@ -93,13 +96,18 @@ and `data/manifests/`. These local artifacts are git-ignored.
 
 The versioned `AdmissionPolicy` has explicit zero-default tolerances for
 duplicates, non-monotonic timestamps, OHLC/price/volume/crossed-quote defects,
-unexpected gaps, and schema drift. The audit reports coverage, gaps and Forex
-weekend closures, stale sequences, jumps, and exact spread statistics. It
-classifies rather than repairs. A changed raw byte, row, timestamp, price,
-metadata, policy, source convention, calendar, or schema produces a new
-dataset identity. The local runner `scripts/admit_real_dukascopy.py` preserves
-and admits the uncommitted EUR/USD 15m bid-only artifact with `BAR_START`, UTC,
-`EPOCH_MILLISECONDS`, `QuoteConvention.BID`, and `forex-weekday-utc-v1`. Its
-admission result is an audit decision only; it does not start empirical strategy
-research. The states are `DETERMINISTIC_TEST_FIXTURE`,
-`EMPIRICALLY_QUALIFIED_DATASET`, and `BLOCKED`.
+unexpected gaps, active-session zero-volume bars, and schema drift. The audit
+reports coverage, gaps and Forex weekend closures, stale sequences, jumps,
+flat/zero-volume classifications, and exact spread statistics. A source-aware,
+versioned quantization policy may normalize only one finite, positive OHLC
+ordering inversion no larger than the configured price tick; raw artifact hash
+and row number remain attached to every normalized record. This is explicit
+source normalization, not fabrication. A changed raw byte, row, timestamp,
+price, tick size, quantization policy, metadata, source convention, calendar,
+or schema produces a new dataset identity. The local runner
+`scripts/admit_real_dukascopy.py` preserves and admits the local EUR/USD 15m
+bid-only Dukascopy-node artifact with `BAR_START`, UTC,
+`EPOCH_MILLISECONDS`, `QuoteConvention.BID`, `price_tick_size=0.00001`, and
+`forex-weekday-utc-v1`. Its admission result is an audit decision only; it
+does not start empirical strategy research. The states are
+`DETERMINISTIC_TEST_FIXTURE`, `EMPIRICALLY_QUALIFIED_DATASET`, and `BLOCKED`.
