@@ -76,8 +76,10 @@ Raw Source → Immutable Artifact → Dukascopy-compatible CSV Import
 ```
 
 `traderos.data.dukascopy` accepts only a local UTF-8 CSV with an explicitly
-declared source timezone, timestamp convention (`bar_start` or `bar_end`), and
-selected unmodified quote side. It preserves complete bid/ask OHLC and volumes
+declared source timezone, timestamp format (`iso_8601` or
+`epoch_milliseconds`), timestamp convention (`bar_start` or `bar_end`), and
+selected unmodified quote side. Epoch milliseconds are converted from integer
+milliseconds directly to UTC. It preserves complete bid/ask OHLC and volumes
 in the normalized JSONL. Its `to_market_bar` mapping uses the configured side
 for the existing single-OHLC `MarketBar` contract and uses bid/ask closes only
 when supplied. No quote, spread, price, volume, or missing bar is fabricated.
@@ -95,5 +97,9 @@ unexpected gaps, and schema drift. The audit reports coverage, gaps and Forex
 weekend closures, stale sequences, jumps, and exact spread statistics. It
 classifies rather than repairs. A changed raw byte, row, timestamp, price,
 metadata, policy, source convention, calendar, or schema produces a new
-dataset identity. The states are `DETERMINISTIC_TEST_FIXTURE`,
+dataset identity. The local runner `scripts/admit_real_dukascopy.py` preserves
+and admits the uncommitted EUR/USD 15m bid-only artifact with `BAR_START`, UTC,
+`EPOCH_MILLISECONDS`, `QuoteConvention.BID`, and `forex-weekday-utc-v1`. Its
+admission result is an audit decision only; it does not start empirical strategy
+research. The states are `DETERMINISTIC_TEST_FIXTURE`,
 `EMPIRICALLY_QUALIFIED_DATASET`, and `BLOCKED`.

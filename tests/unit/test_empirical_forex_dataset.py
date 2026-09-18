@@ -13,6 +13,7 @@ from traderos.data.dukascopy import (
     DukascopyImportConfig,
     DukascopySchemaError,
     QuoteConvention,
+    TimestampFormat,
     TimestampSemantics,
     iter_dukascopy_csv,
     iter_normalized_market_bars,
@@ -63,6 +64,10 @@ def _csv(rows: list[str]) -> str:
             "",
         ]
     )
+
+
+def _bid_only_csv(rows: list[str]) -> str:
+    return "\n".join(["timestamp,open,high,low,close", *rows, ""])
 
 
 def _metadata(path: Path, *, timezone: str = "UTC") -> RawArtifactMetadata:
@@ -235,6 +240,123 @@ def test_bar_end_source_timestamp_is_normalized_to_phase_one_bar_start(tmp_path:
         )
     )
     assert record.timestamp == BASE
+
+
+def test_epoch_milliseconds_are_converted_to_exact_utc_bar_start(tmp_path: Path) -> None:
+    source = tmp_path / "epoch.csv"
+    source.write_text(
+        _bid_only_csv(
+            [
+                "1704067200000,1.10429,1.10429,1.10429,1.10429",
+                "1704068100000,1.10429,1.10429,1.10429,1.10429",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = DukascopyImportConfig(
+        instrument=_instrument(),
+        timeframe=Timeframe.M15,
+        source_symbol="EURUSD",
+        source_timezone="UTC",
+        timestamp_semantics=TimestampSemantics.BAR_START,
+        quote_convention=QuoteConvention.BID,
+        timestamp_format=TimestampFormat.EPOCH_MILLISECONDS,
+    )
+    records = tuple(iter_dukascopy_csv(source, config=config, artifact_hash="a" * 64))
+    assert [record.timestamp for record in records] == [
+        datetime(2024, 1, 1, tzinfo=UTC),
+        datetime(2024, 1, 1, 0, 15, tzinfo=UTC),
+    ]
+    assert all(record.timestamp.tzinfo == UTC for record in records)
+    assert records == tuple(iter_dukascopy_csv(source, config=config, artifact_hash="a" * 64))
+
+
+def test_iso_8601_remains_the_default_timestamp_format(tmp_path: Path) -> None:
+    source = tmp_path / "iso.csv"
+    source.write_text(_bid_only_csv(["2024-01-01T00:00:00Z,1,1,1,1"]), encoding="utf-8")
+    config = _config()
+    record = next(iter_dukascopy_csv(source, config=config, artifact_hash="a" * 64))
+    assert config.timestamp_format is TimestampFormat.ISO_8601
+    assert record.timestamp == datetime(2024, 1, 1, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("value", ["", "1704067200000.0", "not-a-timestamp", "9" * 100])
+def test_invalid_epoch_milliseconds_fail_closed(tmp_path: Path, value: str) -> None:
+    source = tmp_path / "invalid-epoch.csv"
+    source.write_text(_bid_only_csv([f"{value},1,1,1,1"]), encoding="utf-8")
+    config = DukascopyImportConfig(
+        instrument=_instrument(),
+        timeframe=Timeframe.M15,
+        source_symbol="EURUSD",
+        source_timezone="UTC",
+        timestamp_semantics=TimestampSemantics.BAR_START,
+        quote_convention=QuoteConvention.BID,
+        timestamp_format=TimestampFormat.EPOCH_MILLISECONDS,
+    )
+    with pytest.raises(DukascopySchemaError, match="epoch-millisecond|missing"):
+        next(iter_dukascopy_csv(source, config=config, artifact_hash="a" * 64))
+
+
+def test_real_source_schema_preserves_bid_only_and_unavailable_fields(tmp_path: Path) -> None:
+    source = tmp_path / "eurusd-m15-bid.csv"
+    source.write_text(
+        _bid_only_csv(
+            [
+                "1704067200000,1.10429,1.10429,1.10429,1.10429",
+                "1704068100000,1.10429,1.10429,1.10429,1.10429",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    original_bytes = source.read_bytes()
+    store = RawArtifactStore(tmp_path / "raw")
+    preserved, metadata = store.preserve(
+        source,
+        source="dukascopy",
+        source_symbol="EURUSD",
+        requested_start=datetime(2024, 1, 1, tzinfo=UTC),
+        requested_end=datetime(2025, 1, 1, tzinfo=UTC),
+        requested_timeframe="15m",
+        timezone="UTC",
+        download_timestamp=BASE,
+    )
+    config = DukascopyImportConfig(
+        instrument=_instrument(),
+        timeframe=Timeframe.M15,
+        source_symbol="EURUSD",
+        source_timezone="UTC",
+        timestamp_semantics=TimestampSemantics.BAR_START,
+        quote_convention=QuoteConvention.BID,
+        timestamp_format=TimestampFormat.EPOCH_MILLISECONDS,
+    )
+    admission = admit_dukascopy_csv(
+        raw_paths=(preserved,),
+        raw_metadata=(metadata,),
+        config=config,
+        calendar=ForexCalendar(),
+        policy=AdmissionPolicy(),
+        normalized_dir=tmp_path / "normalized",
+        manifest_dir=tmp_path / "manifests",
+        created_at=BASE,
+        deterministic_test_fixture=True,
+    )
+    record = next(
+        iter_normalized_market_bars(
+            admission.normalized_path,
+            config=config,
+            ingestion_timestamp=BASE,
+        )
+    )
+    assert record.timestamp == datetime(2024, 1, 1, tzinfo=UTC)
+    assert record.ask is None and record.bid == Decimal("1.10429")
+    assert record.volume is None
+    normalized_text = admission.normalized_path.read_text(encoding="utf-8")
+    assert '"ask_close":null' in normalized_text
+    assert '"bid_volume":null' in normalized_text
+    assert '"ask_volume":null' in normalized_text
+    assert source.read_bytes() == original_bytes
+    assert sha256_file(source) == sha256_file(preserved) == (metadata.sha256, metadata.byte_size)
+    assert admission.manifest.timestamp_format is TimestampFormat.EPOCH_MILLISECONDS
 
 
 @pytest.mark.parametrize(

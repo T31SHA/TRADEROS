@@ -33,10 +33,11 @@ empirical strategy validation without an eligible immutable dataset.
 
 The repository now includes an offline Dukascopy-compatible Forex data-admission
 gate: raw source bytes are preserved immutably, imported locally, normalized to
-UTC with declared bar semantics, quality-audited against the Forex calendar,
-and bound into a deterministic manifest before research can be eligible. No
-real EUR/USD artifact is present; fixtures remain explicitly non-empirical.
-It does not claim a trading edge. See
+UTC with declared timestamp format and bar semantics, quality-audited against
+the Forex calendar, and bound into a deterministic manifest before research can
+be eligible. A real local EUR/USD bid-only artifact may be admitted with
+`scripts/admit_real_dukascopy.py`; it is not committed, and no empirical
+strategy experiment or qualification claim is made here. See
 [`docs/RESEARCH_VALIDATION.md`](docs/RESEARCH_VALIDATION.md) for the evidence
 inventory and required data-validation gate.
 

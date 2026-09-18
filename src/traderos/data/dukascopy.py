@@ -11,7 +11,7 @@ import csv
 import json
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
@@ -29,6 +29,13 @@ class TimestampSemantics(StrEnum):
 
     BAR_START = "bar_start"
     BAR_END = "bar_end"
+
+
+class TimestampFormat(StrEnum):
+    """The declared representation of timestamps in the source artifact."""
+
+    ISO_8601 = "iso_8601"
+    EPOCH_MILLISECONDS = "epoch_milliseconds"
 
 
 class QuoteConvention(StrEnum):
@@ -53,6 +60,7 @@ class DukascopyImportConfig:
     timestamp_semantics: TimestampSemantics
     quote_convention: QuoteConvention
     source_version: str | None = None
+    timestamp_format: TimestampFormat = TimestampFormat.ISO_8601
 
     def __post_init__(self) -> None:
         if not self.source_symbol.strip() or not self.source_timezone.strip():
@@ -188,14 +196,37 @@ def _decimal(value: str | None, *, field: str, row_number: int) -> Decimal | Non
     return parsed
 
 
+def _epoch_milliseconds(value: str, *, row_number: int) -> datetime:
+    """Convert a decimal-free Unix epoch-millisecond value to UTC exactly."""
+
+    digits = value[1:] if value[:1] in {"+", "-"} else value
+    if not digits or any(character < "0" or character > "9" for character in digits):
+        raise DukascopySchemaError(
+            f"row {row_number}: timestamp is not an integer epoch-millisecond value"
+        )
+    try:
+        milliseconds = int(value, 10)
+        seconds, remainder = divmod(milliseconds, 1000)
+        return datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
+            seconds=seconds, microseconds=remainder * 1000
+        )
+    except (OverflowError, ValueError) as exc:
+        raise DukascopySchemaError(
+            f"row {row_number}: epoch-millisecond timestamp is outside datetime range"
+        ) from exc
+
+
 def _timestamp(value: str | None, config: DukascopyImportConfig, row_number: int) -> datetime:
     if value is None or not value.strip():
         raise DukascopySchemaError(f"row {row_number}: timestamp is missing")
     text = value.strip().replace("Z", "+00:00")
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError as exc:
-        raise DukascopySchemaError(f"row {row_number}: timestamp is not ISO-8601") from exc
+    if config.timestamp_format is TimestampFormat.EPOCH_MILLISECONDS:
+        parsed = _epoch_milliseconds(text, row_number=row_number)
+    else:
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError as exc:
+            raise DukascopySchemaError(f"row {row_number}: timestamp is not ISO-8601") from exc
     # ``normalize_timestamp`` rejects unresolved/ambiguous local wall times.
     try:
         normalized = normalize_timestamp(parsed, config.source_timezone)
@@ -335,6 +366,7 @@ __all__ = [
     "DukascopyQuoteRecord",
     "DukascopySchemaError",
     "QuoteConvention",
+    "TimestampFormat",
     "TimestampSemantics",
     "dukascopy_csv_schema",
     "iter_dukascopy_csv",

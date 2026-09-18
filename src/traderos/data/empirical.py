@@ -29,6 +29,7 @@ from traderos.data.dukascopy import (
     DukascopyQuoteRecord,
     DukascopySchemaError,
     QuoteConvention,
+    TimestampFormat,
     TimestampSemantics,
     dukascopy_csv_schema,
     iter_dukascopy_csv,
@@ -40,7 +41,7 @@ from traderos.data.time import require_utc
 from traderos.data.timeframes import Timeframe
 
 CANONICAL_SCHEMA_VERSION = "empirical-forex-jsonl-v1"
-INGESTION_VERSION = "dukascopy-local-import-v1"
+INGESTION_VERSION = "dukascopy-local-import-v2"
 
 
 class GapClassification(StrEnum):
@@ -218,6 +219,7 @@ class EmpiricalDatasetManifest:
     timeframe: str
     coverage_start: datetime | None
     coverage_end: datetime | None
+    timestamp_format: TimestampFormat
     timestamp_semantics: TimestampSemantics
     timezone: str
     quote_convention: QuoteConvention
@@ -242,6 +244,7 @@ class EmpiricalDatasetManifest:
             "timeframe": self.timeframe,
             "coverage_start": self.coverage_start.isoformat() if self.coverage_start else None,
             "coverage_end": self.coverage_end.isoformat() if self.coverage_end else None,
+            "timestamp_format": self.timestamp_format.value,
             "timestamp_semantics": self.timestamp_semantics.value,
             "timezone": self.timezone,
             "quote_convention": self.quote_convention.value,
@@ -514,6 +517,7 @@ def admit_dukascopy_csv(
         "instrument": config.instrument.canonical_symbol,
         "asset_class": config.instrument.asset_class.value,
         "timeframe": config.timeframe.value,
+        "timestamp_format": config.timestamp_format.value,
         "timestamp_semantics": config.timestamp_semantics.value,
         "timezone": config.source_timezone,
         "quote_convention": config.quote_convention.value,
@@ -536,6 +540,7 @@ def admit_dukascopy_csv(
         timeframe=config.timeframe.value,
         coverage_start=report.coverage_start,
         coverage_end=report.coverage_end,
+        timestamp_format=config.timestamp_format,
         timestamp_semantics=config.timestamp_semantics,
         timezone=config.source_timezone,
         quote_convention=config.quote_convention,
