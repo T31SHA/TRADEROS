@@ -81,28 +81,29 @@ vary between runs; the dataset version excludes that non-deterministic field.
 
 ## First governed empirical Forex dataset
 
-The Dukascopy-compatible importer is an offline import boundary, not a live
-provider: external data must first be preserved as a local immutable raw
-artifact. It requires an explicit source timezone and bar-start/bar-end
-declaration; it never assumes UTC or guesses timestamp semantics. UTC is the
-normalized system boundary and Phase 1's Forex weekend calendar determines
-expected closures. Missing in-session bars are data gaps; closed intervals are
-not silently filled or treated as corruption. A present zero-volume flat bar is
-retained and classified against the Forex calendar. An active-session
-zero-volume bar is a blocker by default; a weekend/closed-session zero-volume
-bar is an expected closure observation. Dukascopy-node volume is preserved as
-source-provided Dukascopy volume and is not interpreted as centralized,
-market-wide traded volume.
+The canonical empirical source is an offline Dukascopy tick artifact. External
+acquisition must first preserve the exact bytes; TRADEROS does not download
+ticks. The exact source schema is
+`timestamp,askPrice,bidPrice,askVolume,bidVolume`, with integer Unix epoch
+milliseconds normalized to UTC. Raw ticks are validated in source order and
+must have finite positive bid/ask prices, `bid <= ask`, and finite
+non-negative bid/ask volumes. Malformed or invalid rows are rejected or
+reported as blockers; they are never silently dropped or repaired.
 
-The importer may apply the explicit, versioned Dukascopy fixed-price
-quantization policy only to a finite, positive one-tick OHLC ordering inversion
-when `price_tick_size` is configured. The normalized record retains raw artifact
-hash and source row provenance, while the immutable raw CSV remains authoritative
-evidence. Larger or multi-field inconsistencies remain blocking quality errors.
+Deterministic M15 aggregation uses BAR_START UTC semantics. It preserves bid
+and ask OHLCV and closing/mean/minimum/maximum spread. Empty intervals remain
+missing. The Dukascopy session calendar classifies missing intervals as
+`EXPECTED_MARKET_CLOSURE`, `DATA_GAP`, or `UNKNOWN`; active-session gaps and
+unexplained active-session zero-volume bars block admission. Zero volume is not
+treated as missing automatically, and source volume is not claimed to be
+centralized market-wide volume.
 
-The admission manifest binds hashes of all raw artifacts, source metadata,
-instrument, timeframe, quote convention, timestamp semantics, adjustment
-policy, calendar, quality policy/report, importer, canonical schema, and
-normalized content. A real dataset becomes empirical only when the explicit
-quality policy passes. Test fixtures are permanently marked
-`DETERMINISTIC_TEST_FIXTURE`; they can never support an empirical claim.
+Tick-derived M15 bars do not use the previous one-tick source-candle
+quantization repair. OHLC validation is exact and any violation blocks. The
+manifest binds raw tick hashes, aggregation policy/version, calendar identity,
+timestamp semantics, instrument, timeframe, price/volume sides, quote
+configuration, quality policy/report, importer/schema versions, and normalized
+content. The prior aggregated v1/v2 artifacts remain immutable compatibility
+inputs but are not canonical empirical datasets. A real dataset becomes
+empirical only when the explicit quality policy passes. Test fixtures remain
+`DETERMINISTIC_TEST_FIXTURE` and cannot support an empirical claim.

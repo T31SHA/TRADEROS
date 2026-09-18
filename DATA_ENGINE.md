@@ -70,46 +70,42 @@ for the first real Forex dataset. It does not download data and it does not run
 a backtest:
 
 ```text
-Raw Source → Immutable Artifact → Dukascopy-compatible CSV Import
-→ canonical local JSONL / MarketBar mapping → Quality Audit
-→ immutable dataset manifest → qualification gate
+Dukascopy ticks → immutable raw bytes → deterministic M15 aggregation
+→ canonical bid/ask JSONL + MarketBar mapping → quality/admission gate
 ```
 
-`traderos.data.dukascopy` accepts only a local UTF-8 CSV with an explicitly
-declared source timezone, timestamp format (`iso_8601` or
-`epoch_milliseconds`), timestamp convention (`bar_start` or `bar_end`), and
-selected unmodified quote side. Epoch milliseconds are converted from integer
-milliseconds directly to UTC. It preserves complete bid/ask OHLC and volumes
-in the normalized JSONL. Dukascopy-node's bare `volume` column maps to
-`bid_volume` only when `QuoteConvention.BID` is explicitly selected;
-`ask_volume` is never invented. Its `to_market_bar` mapping uses the configured
-side for the existing single-OHLC `MarketBar` contract and uses bid/ask closes
-only when supplied. No quote, spread, price, volume, or missing bar is
-fabricated.
+`traderos.data.ticks` accepts only the exact Dukascopy-node schema
+`timestamp,askPrice,bidPrice,askVolume,bidVolume`. Epoch milliseconds are
+normalized directly to UTC. Ticks must remain strictly increasing in raw order;
+bid/ask, positive-price, and finite non-negative-volume defects are reported
+and block admission. Aggregation uses bar-start UTC buckets and preserves both
+bid and ask OHLCV plus closing, mean, minimum, and maximum spread. Empty M15
+intervals are absent; no quote, volume, spread, OHLC, or missing bar is
+fabricated. The existing single-side `MarketBar` contract is populated only by
+an explicit bid/ask mapping.
+
+The existing `traderos.data.dukascopy` bar importer remains available for
+immutable v1/v2 artifacts and focused compatibility tests. Those aggregated
+artifacts are not the canonical empirical source.
 
 `RawArtifactStore` content-addresses files by streaming SHA-256 under
-`data/raw/dukascopy/<hash>/`; it never overwrites bytes. Metadata records
-source, optional source version, source symbol, requested range/timeframe,
-timezone, original name, byte size, hash, and UTC download time. Normalized
-content, quality report, and manifest are immutable paths in `data/normalized/`
-and `data/manifests/`. These local artifacts are git-ignored.
+`data/raw/dukascopy/<hash>/`; it never overwrites bytes. Tick metadata records
+source, source symbol, coverage start/end, timezone, original filename, hash,
+byte size, download timestamp, and optional known source version. Normalized
+content, quality report, and manifest are immutable paths in
+`data/normalized/` and `data/manifests/`. These local artifacts are git-ignored.
 
 The versioned `AdmissionPolicy` has explicit zero-default tolerances for
-duplicates, non-monotonic timestamps, OHLC/price/volume/crossed-quote defects,
-unexpected gaps, active-session zero-volume bars, and schema drift. The audit
-reports coverage, gaps and Forex weekend closures, stale sequences, jumps,
-flat/zero-volume classifications, and exact spread statistics. A source-aware,
-versioned quantization policy may normalize only one finite, positive OHLC
-ordering inversion no larger than the configured price tick; raw artifact hash
-and row number remain attached to every normalized record. This is explicit
-source normalization, not fabrication. A changed raw byte, row, timestamp,
-price, tick size, quantization policy, metadata, source convention, calendar,
-or schema produces a new dataset identity. The local runner
-`scripts/admit_real_dukascopy.py` preserves and admits the local EUR/USD 15m
-bid-only Dukascopy-node artifact with `BAR_START`, UTC,
-`EPOCH_MILLISECONDS`, `QuoteConvention.BID`, `price_tick_size=0.00001`, and
-`dukascopy-forex-utc-session-v1`. Its admission result is an audit decision only; it
-does not start empirical strategy research. The states are
+duplicate/non-monotonic ticks, invalid prices, crossed quotes, volume defects,
+OHLC violations, unexpected or unknown gaps, and active-session zero-volume
+bars. The tick audit reports raw rows, M15 bars, coverage, missing intervals,
+closures, stale sequences, suspicious jumps, zero-volume classifications, and
+spread statistics. Tick-derived M15 bars do not use the prior one-tick
+source-candle quantization repair. A changed raw byte, tick, aggregation policy,
+metadata, calendar, timestamp semantics, quality policy, or quote configuration
+produces a new dataset identity. The bounded local runner
+`scripts/admit_real_dukascopy_ticks.py` accepts a caller-supplied artifact and
+never downloads or expands its interval. The states are
 `DETERMINISTIC_TEST_FIXTURE`, `EMPIRICALLY_QUALIFIED_DATASET`, and `BLOCKED`.
 The offline `scripts/diagnose_dukascopy_sessions.py` tool reports every missing
 run and groups active gaps and zero-volume bars by UTC hour, weekday, month,

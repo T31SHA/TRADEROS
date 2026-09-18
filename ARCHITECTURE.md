@@ -238,20 +238,22 @@ canonical evidence export, and paper-only promotion review. It delegates
 execution/accounting to Phase 3 and records rather than duplicates Phase 5–8
 provenance. See `docs/RESEARCH_ENGINE.md`.
 
-The first empirical-data admission boundary is intentionally local and
-one-directional:
+The first empirical-data admission boundary is intentionally local,
+one-directional, and tick-based:
 
 ```text
-Raw Source → Immutable Artifact → Import → Canonical MarketBar
-→ Quality Audit → Dataset Manifest → Qualification Gate
+Dukascopy ticks → Immutable Raw Artifact → Deterministic M15 Aggregation
+→ Canonical bid/ask dataset → MarketBar mapping → Quality Gate → Manifest
 ```
 
-The Dukascopy-compatible CSV adapter has no network, broker, credential, or
-research dependency. Raw bytes are content-addressed before parsing; the
-normalized bid/ask record, deterministic audit, and manifest are immutable.
-Only a non-fixture dataset with complete explicit lineage and an accepted
-versioned policy is eligible for research. The current repository includes the
-gate but no empirical artifact.
+The Dukascopy tick adapter has no network, broker, credential, or research
+dependency. Raw bytes are content-addressed before parsing; strict ordering,
+bid/ask integrity, exact M15 aggregation, deterministic audit, and the
+manifest are immutable. Empty intervals are never synthesized. Only a
+non-fixture dataset with complete explicit lineage and an accepted versioned
+policy is eligible for research. The prior aggregated v1/v2 artifacts remain
+available for compatibility but are not canonical. The current repository
+includes the tick gate but no empirical artifact.
 
 The historical canonical path is now a thin Phase 3 strategy adapter:
 `Phase 2 features → Phase 5 regime → Phase 4 strategies → Phase 6 fusion →

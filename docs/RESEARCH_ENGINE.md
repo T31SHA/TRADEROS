@@ -113,21 +113,23 @@ Missing evidence stays `UNKNOWN`, `HOLD`, or `REJECT`.
 
 ## Governed Forex dataset admission
 
-Before any Phase 9 experiment, a local Dukascopy-compatible artifact must pass:
+Before any Phase 9 experiment, a local Dukascopy tick artifact must pass:
 
 ```text
-Acquire → Preserve immutable raw bytes → Normalize → Quality audit → Qualify
+Dukascopy ticks → Preserve immutable raw bytes → Aggregate M15
+→ Quality audit → Qualify
 ```
 
-This has no automatic research/backtest operation. The audit gates source and
-coverage lineage, explicit timezone and timestamp semantics, duplicates and
-ordering, OHLC/prices, bid/ask integrity and spread, volume where available,
-calendar-aware missing intervals, artifact boundaries, schema drift, stale
-sequences, and suspicious jumps. It blocks unresolved timezone, missing
-lineage/coverage, unknown calendar, duplicate or non-monotonic timestamps,
-material OHLC defects, above-policy crossed quotes/gaps, and schema drift.
-No repairs, fill, interpolation, or manufactured quotes are permitted.
+This has no automatic research/backtest operation and supports bounded target
+intervals only. The audit gates source and coverage lineage, exact tick schema,
+UTC normalization, strict ordering, OHLC/prices, bid/ask integrity and spread,
+bid/ask volume, calendar-aware missing M15 intervals, stale sequences, and
+suspicious jumps. It blocks duplicate or non-monotonic ticks, invalid prices,
+crossed quotes, invalid volumes, exact OHLC violations, active-session gaps,
+unknown gaps, and unexplained active-session zero-volume bars. No repairs,
+sorting, fill, interpolation, or manufactured quotes are permitted. The
+existing aggregated v1/v2 artifacts remain immutable but are not canonical.
 
-At this commit no actual EUR/USD artifact is supplied, so the empirical
+At this commit no actual EUR/USD tick artifact is supplied, so the empirical
 qualification state remains `BLOCKED — artifact not supplied`. The local test
-fixtures exercise the gate only and are not empirical datasets.
+fixtures exercise the tick gate only and are not empirical datasets.

@@ -17,7 +17,7 @@ import tempfile
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from enum import StrEnum
 from pathlib import Path
 from statistics import median
@@ -37,6 +37,15 @@ from traderos.data.dukascopy import (
 )
 from traderos.data.instruments import AssetClass
 from traderos.data.lineage import AdjustmentPolicy
+from traderos.data.ticks import (
+    DukascopyTickImportConfig,
+    TickAggregationPolicy,
+    TickAggregator,
+    TickM15Bar,
+    TickSchemaError,
+    TickValidationReport,
+    iter_dukascopy_ticks,
+)
 from traderos.data.time import require_utc
 from traderos.data.timeframes import Timeframe
 
@@ -104,6 +113,63 @@ class RawArtifactMetadata:
 
 
 @dataclass(frozen=True)
+class TickRawArtifactMetadata:
+    """Identity and provenance for one immutable raw tick artifact."""
+
+    source: str
+    source_symbol: str
+    coverage_start: datetime
+    coverage_end: datetime
+    timezone: str
+    original_filename: str
+    sha256: str
+    byte_size: int
+    download_timestamp: datetime
+    source_version: str | None = None
+
+    def __post_init__(self) -> None:
+        require_utc(self.coverage_start)
+        require_utc(self.coverage_end)
+        require_utc(self.download_timestamp)
+        if self.coverage_start >= self.coverage_end:
+            raise ValueError("tick artifact coverage_start must precede coverage_end")
+        if not all(
+            value.strip()
+            for value in (
+                self.source,
+                self.source_symbol,
+                self.timezone,
+                self.original_filename,
+                self.sha256,
+            )
+        ):
+            raise ValueError("tick artifact identity fields must not be blank")
+        if len(self.sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in self.sha256
+        ):
+            raise ValueError("tick artifact SHA-256 must be lowercase hexadecimal")
+        if self.byte_size < 0:
+            raise ValueError("tick artifact byte size must not be negative")
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "source": self.source,
+            "source_symbol": self.source_symbol,
+            "coverage_start": self.coverage_start.isoformat(),
+            "coverage_end": self.coverage_end.isoformat(),
+            "timezone": self.timezone,
+            "original_filename": self.original_filename,
+            "sha256": self.sha256,
+            "byte_size": self.byte_size,
+            "download_timestamp": self.download_timestamp.isoformat(),
+            "source_version": self.source_version,
+        }
+
+
+TickArtifactMetadata = TickRawArtifactMetadata
+
+
+@dataclass(frozen=True)
 class AdmissionPolicy:
     """Versioned explicit rejection tolerances; no universal threshold is implied."""
 
@@ -122,6 +188,7 @@ class AdmissionPolicy:
     suspicious_jump_fraction: Decimal = Decimal("0.20")
     require_bid_ask: bool = False
     max_active_session_zero_volume: int = 0
+    max_invalid_ticks: int = 0
 
     def __post_init__(self) -> None:
         if not self.policy_id.strip() or not self.policy_version.strip():
@@ -138,6 +205,7 @@ class AdmissionPolicy:
             self.max_unexpected_gaps,
             self.max_schema_drift,
             self.max_active_session_zero_volume,
+            self.max_invalid_ticks,
         )
         if any(value < 0 for value in values):
             raise ValueError("admission tolerances must be non-negative")
@@ -161,6 +229,7 @@ class AdmissionPolicy:
                 "suspicious_jump_fraction": str(self.suspicious_jump_fraction),
                 "require_bid_ask": self.require_bid_ask,
                 "max_active_session_zero_volume": self.max_active_session_zero_volume,
+                "max_invalid_ticks": self.max_invalid_ticks,
             }
         )
 
@@ -351,6 +420,45 @@ class RawArtifactStore:
             download_timestamp=download_timestamp,
             sha256=digest,
             byte_size=size,
+            source_version=source_version,
+        )
+        target = self._root / source / digest / source_path.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            existing_digest, existing_size = sha256_file(target)
+            if existing_digest != digest or existing_size != size:
+                raise RuntimeError("immutable raw artifact path has conflicting bytes")
+        else:
+            _copy_exclusive(source_path, target)
+        metadata_path = target.with_suffix(target.suffix + ".metadata.json")
+        _write_immutable_json(metadata_path, metadata.canonical())
+        return target, metadata
+
+    def preserve_tick(
+        self,
+        source_path: Path,
+        *,
+        source: str,
+        source_symbol: str,
+        coverage_start: datetime,
+        coverage_end: datetime,
+        timezone: str,
+        download_timestamp: datetime,
+        source_version: str | None = None,
+    ) -> tuple[Path, TickRawArtifactMetadata]:
+        """Preserve raw tick bytes without interpreting or overwriting them."""
+
+        digest, size = sha256_file(source_path)
+        metadata = TickRawArtifactMetadata(
+            source=source,
+            source_symbol=source_symbol,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+            timezone=timezone,
+            original_filename=source_path.name,
+            sha256=digest,
+            byte_size=size,
+            download_timestamp=download_timestamp,
             source_version=source_version,
         )
         target = self._root / source / digest / source_path.name
@@ -1028,6 +1136,468 @@ def _timeframe_for_duration(duration: timedelta) -> Timeframe:
     raise ValueError("unsupported timeframe duration")
 
 
+# ---------------------------------------------------------------------------
+# Tick-source empirical admission
+
+TICK_CANONICAL_SCHEMA_VERSION = "empirical-forex-tick-m15-jsonl-v1"
+TICK_INGESTION_VERSION = "dukascopy-tick-import-v1"
+
+
+@dataclass(frozen=True)
+class TickDatasetQualityReport:
+    """Admission evidence for a tick-derived canonical M15 dataset."""
+
+    raw_tick_rows: int
+    m15_bar_count: int
+    coverage_start: datetime | None
+    coverage_end: datetime | None
+    missing_m15_intervals: int
+    expected_closures: int
+    unexpected_gaps: int
+    unknown_gaps: int
+    invalid_ticks: int
+    duplicate_timestamps: int
+    non_monotonic_timestamps: int
+    crossed_quotes: int
+    nonfinite_prices: int
+    nonpositive_prices: int
+    volume_anomalies: int
+    zero_volume_bars: int
+    closed_session_zero_volume: int
+    active_session_zero_volume: int
+    unknown_zero_volume: int
+    ohlc_violations: int
+    stale_sequences: int
+    suspicious_jumps: int
+    spread_bar_count: int
+    spread_observation_count: int
+    mean_spread: Decimal | None
+    minimum_spread: Decimal | None
+    maximum_spread: Decimal | None
+    calendar_id: str
+    validation_violations: tuple[dict[str, object], ...] = ()
+
+    @property
+    def missing_intervals(self) -> int:
+        return self.missing_m15_intervals
+
+    @property
+    def active_session_zero_volume_count(self) -> int:
+        return self.active_session_zero_volume
+
+    @property
+    def hash(self) -> str:
+        return _hash_json(self.canonical())
+
+    def canonical(self) -> dict[str, object]:
+        payload = asdict(self)
+        for key in ("coverage_start", "coverage_end"):
+            value = payload[key]
+            payload[key] = value.isoformat() if value is not None else None
+        for key in ("mean_spread", "minimum_spread", "maximum_spread"):
+            value = payload[key]
+            payload[key] = str(value) if value is not None else None
+        payload["validation_violations"] = list(self.validation_violations)
+        return payload
+
+
+@dataclass(frozen=True)
+class TickDatasetManifest:
+    """Immutable identity for the tick → M15 transformation."""
+
+    dataset_id: str
+    source: str
+    source_mode: str
+    aggregation: str
+    price_sides: str
+    volume_sides: str
+    timezone: str
+    timestamp_semantics: str
+    calendar_id: str
+    aggregation_policy_id: str
+    aggregation_policy_version: str
+    raw_artifact_hashes: tuple[str, ...]
+    normalized_content_hash: str
+    quality_report_hash: str
+    instrument: str
+    timeframe: str
+    coverage_start: datetime | None
+    coverage_end: datetime | None
+    quality_policy_identity: str
+    quote_configuration: str
+    ingestion_version: str
+    canonical_schema_version: str
+    created_at: datetime
+    artifact_metadata: tuple[TickRawArtifactMetadata, ...]
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "dataset_id": self.dataset_id,
+            "source": self.source,
+            "source_mode": self.source_mode,
+            "aggregation": self.aggregation,
+            "price_sides": self.price_sides,
+            "volume_sides": self.volume_sides,
+            "timezone": self.timezone,
+            "timestamp_semantics": self.timestamp_semantics,
+            "calendar_id": self.calendar_id,
+            "aggregation_policy_id": self.aggregation_policy_id,
+            "aggregation_policy_version": self.aggregation_policy_version,
+            "raw_artifact_hashes": list(self.raw_artifact_hashes),
+            "normalized_content_hash": self.normalized_content_hash,
+            "quality_report_hash": self.quality_report_hash,
+            "instrument": self.instrument,
+            "timeframe": self.timeframe,
+            "coverage_start": self.coverage_start.isoformat() if self.coverage_start else None,
+            "coverage_end": self.coverage_end.isoformat() if self.coverage_end else None,
+            "quality_policy_identity": self.quality_policy_identity,
+            "quote_configuration": self.quote_configuration,
+            "ingestion_version": self.ingestion_version,
+            "canonical_schema_version": self.canonical_schema_version,
+            "created_at": self.created_at.isoformat(),
+            "artifact_metadata": [item.canonical() for item in self.artifact_metadata],
+        }
+
+
+@dataclass(frozen=True)
+class TickDatasetAdmission:
+    """Tick admission result; it contains no research or performance claim."""
+
+    manifest: TickDatasetManifest
+    quality_report: TickDatasetQualityReport
+    state: AdmissionState
+    blockers: tuple[str, ...]
+    normalized_path: Path
+    manifest_path: Path
+    quality_report_path: Path
+
+
+def _tick_floor_m15(timestamp: datetime) -> datetime:
+    return timestamp.replace(minute=(timestamp.minute // 15) * 15, second=0, microsecond=0)
+
+
+def _tick_ceil_m15(timestamp: datetime) -> datetime:
+    floor = _tick_floor_m15(timestamp)
+    return floor if timestamp == floor else floor + timedelta(minutes=15)
+
+
+def _tick_gap_counts(
+    *,
+    actual: set[datetime],
+    calendar: MarketCalendar,
+    start: datetime | None,
+    end: datetime | None,
+) -> tuple[int, int, int, int]:
+    if start is None or end is None or start >= end:
+        return 0, 0, 0, 0
+    current = _tick_floor_m15(start)
+    stop = _tick_ceil_m15(end)
+    missing = closures = gaps = unknown = 0
+    while current < stop:
+        if current not in actual:
+            missing += 1
+            try:
+                open_at = calendar.is_open_at(current)
+            except (TypeError, ValueError, OverflowError):
+                unknown += 1
+            else:
+                if open_at:
+                    gaps += 1
+                else:
+                    closures += 1
+        current += timedelta(minutes=15)
+    return missing, closures, gaps, unknown
+
+
+def _tick_quality_report(
+    *,
+    bars: Sequence[TickM15Bar],
+    validation: TickValidationReport,
+    calendar: MarketCalendar,
+    coverage_start: datetime | None,
+    coverage_end: datetime | None,
+    policy: AdmissionPolicy,
+) -> TickDatasetQualityReport:
+    actual = {bar.timestamp for bar in bars}
+    missing, closures, gaps, unknown = _tick_gap_counts(
+        actual=actual,
+        calendar=calendar,
+        start=coverage_start,
+        end=coverage_end,
+    )
+    zero_volume = closed_zero = active_zero = unknown_zero = 0
+    ohlc_violations = 0
+    spreads: list[Decimal] = []
+    stale_sequences = 0
+    suspicious_jumps = 0
+    stale_run = 1
+    previous: TickM15Bar | None = None
+    for bar in bars:
+        if bar.bid.volume == 0 or bar.ask.volume == 0:
+            zero_volume += 1
+            try:
+                is_open = calendar.is_open_at(bar.timestamp)
+            except (TypeError, ValueError, OverflowError):
+                unknown_zero += 1
+            else:
+                if is_open:
+                    active_zero += 1
+                else:
+                    closed_zero += 1
+        for side in (bar.bid, bar.ask):
+            if not (
+                side.high >= side.open
+                and side.high >= side.close
+                and side.low <= side.open
+                and side.low <= side.close
+                and side.high >= side.low
+            ):
+                ohlc_violations += 1
+        spreads.append(bar.mean_spread)
+        if previous is not None and previous.bid.close != 0:
+            jump = abs(bar.bid.open - previous.bid.close) / previous.bid.close
+            if jump > policy.suspicious_jump_fraction:
+                suspicious_jumps += 1
+            if bar.bid.close == previous.bid.close:
+                stale_run += 1
+            else:
+                if stale_run >= policy.stale_sequence_length:
+                    stale_sequences += 1
+                stale_run = 1
+        previous = bar
+    if stale_run >= policy.stale_sequence_length:
+        stale_sequences += 1
+
+    spread_observations = sum(bar.tick_count for bar in bars)
+    mean_spread: Decimal | None = None
+    if spread_observations:
+        with localcontext() as context:
+            context.prec = 50
+            mean_spread = sum(
+                (bar.mean_spread * bar.tick_count for bar in bars),
+                Decimal("0"),
+            ) / Decimal(spread_observations)
+    return TickDatasetQualityReport(
+        raw_tick_rows=validation.row_count,
+        m15_bar_count=len(bars),
+        coverage_start=coverage_start,
+        coverage_end=coverage_end,
+        missing_m15_intervals=missing,
+        expected_closures=closures,
+        unexpected_gaps=gaps,
+        unknown_gaps=unknown,
+        invalid_ticks=validation.invalid_tick_count,
+        duplicate_timestamps=validation.duplicate_timestamps,
+        non_monotonic_timestamps=validation.non_monotonic_timestamps,
+        crossed_quotes=validation.crossed_quote_count,
+        nonfinite_prices=validation.nonfinite_price_count,
+        nonpositive_prices=validation.nonpositive_price_count,
+        volume_anomalies=validation.volume_anomaly_count,
+        zero_volume_bars=zero_volume,
+        closed_session_zero_volume=closed_zero,
+        active_session_zero_volume=active_zero,
+        unknown_zero_volume=unknown_zero,
+        ohlc_violations=ohlc_violations,
+        stale_sequences=stale_sequences,
+        suspicious_jumps=suspicious_jumps,
+        spread_bar_count=len(spreads),
+        spread_observation_count=spread_observations,
+        mean_spread=mean_spread,
+        minimum_spread=min((bar.minimum_spread for bar in bars), default=None),
+        maximum_spread=max((bar.maximum_spread for bar in bars), default=None),
+        calendar_id=calendar.calendar_id,
+        validation_violations=tuple(item.canonical() for item in validation.violations),
+    )
+
+
+def _tick_blockers(
+    report: TickDatasetQualityReport,
+    *,
+    policy: AdmissionPolicy,
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if report.invalid_ticks > policy.max_invalid_ticks:
+        blockers.append("invalid_ticks")
+    if report.duplicate_timestamps > policy.max_duplicate_timestamps:
+        blockers.append("duplicate_timestamps")
+    if report.non_monotonic_timestamps > policy.max_non_monotonic_timestamps:
+        blockers.append("non_monotonic_timestamps")
+    if report.crossed_quotes > policy.max_crossed_quotes:
+        blockers.append("crossed_quotes")
+    if report.nonfinite_prices:
+        blockers.append("nonfinite_prices")
+    if report.nonpositive_prices > policy.max_nonpositive_prices:
+        blockers.append("nonpositive_prices")
+    if report.volume_anomalies > policy.max_volume_anomalies:
+        blockers.append("volume_anomalies")
+    if report.ohlc_violations > policy.max_invalid_ohlc:
+        blockers.append("ohlc_violations")
+    if report.unexpected_gaps > policy.max_unexpected_gaps:
+        blockers.append("unexpected_gaps")
+    if report.unknown_gaps:
+        blockers.append("unknown_gaps")
+    if report.active_session_zero_volume > policy.max_active_session_zero_volume:
+        blockers.append("active_session_zero_volume")
+    if (
+        policy.max_suspicious_jumps is not None
+        and report.suspicious_jumps > policy.max_suspicious_jumps
+    ):
+        blockers.append("suspicious_jumps")
+    return tuple(sorted(set(blockers)))
+
+
+def admit_dukascopy_ticks(
+    *,
+    raw_paths: Iterable[Path],
+    raw_metadata: Iterable[TickRawArtifactMetadata],
+    config: DukascopyTickImportConfig,
+    calendar: MarketCalendar,
+    policy: AdmissionPolicy,
+    normalized_dir: Path,
+    manifest_dir: Path,
+    created_at: datetime,
+    aggregation_policy: TickAggregationPolicy | None = None,
+    deterministic_test_fixture: bool = False,
+) -> TickDatasetAdmission:
+    """Preserve no bytes and perform no acquisition; admit local tick artifacts."""
+
+    require_utc(created_at)
+    paths = tuple(raw_paths)
+    artifacts = tuple(raw_metadata)
+    if not paths or len(paths) != len(artifacts):
+        raise ValueError("each tick import path requires exactly one raw metadata record")
+    if any(item.source != "dukascopy" for item in artifacts):
+        raise ValueError("tick import requires Dukascopy raw artifact metadata")
+    if any(item.source_symbol != config.source_symbol for item in artifacts):
+        raise ValueError("tick artifact symbol does not match import configuration")
+    if any(item.timezone != config.source_timezone for item in artifacts):
+        raise ValueError("tick artifact timezone does not match import configuration")
+    if config.source_version and any(
+        item.source_version != config.source_version for item in artifacts
+    ):
+        raise ValueError("tick artifact source version does not match import configuration")
+
+    aggregation = aggregation_policy or TickAggregationPolicy()
+    aggregator = TickAggregator(policy=aggregation)
+    for path, metadata in zip(paths, artifacts, strict=True):
+        actual_hash, actual_size = sha256_file(path)
+        if actual_hash != metadata.sha256 or actual_size != metadata.byte_size:
+            raise ValueError("raw tick bytes no longer match preserved metadata")
+        try:
+            ticks = iter_dukascopy_ticks(
+                path,
+                artifact_hash=metadata.sha256,
+                source_timezone=config.source_timezone,
+            )
+            for tick in ticks:
+                aggregator.add(tick)
+        except (OSError, TickSchemaError):
+            raise
+    result = aggregator.finish()
+    coverage_start = min(item.coverage_start for item in artifacts)
+    coverage_end = max(item.coverage_end for item in artifacts)
+    report = _tick_quality_report(
+        bars=result.bars,
+        validation=result.validation,
+        calendar=calendar,
+        coverage_start=coverage_start,
+        coverage_end=coverage_end,
+        policy=policy,
+    )
+
+    normalized_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", delete=False, dir=normalized_dir
+    ) as staged:
+        staged_path = Path(staged.name)
+        hasher = hashlib.sha256()
+        for bar in result.bars:
+            text = json.dumps(bar.canonical(), sort_keys=True, separators=(",", ":")) + "\n"
+            staged.write(text)
+            hasher.update(text.encode())
+    normalized_hash = hasher.hexdigest()
+    quality_hash = report.hash
+    material = {
+        "source": "dukascopy",
+        "source_mode": "tick",
+        "aggregation": "15m",
+        "price_sides": aggregation.price_sides,
+        "volume_sides": aggregation.volume_sides,
+        "timezone": config.source_timezone,
+        "timestamp_semantics": aggregation.timestamp_semantics,
+        "calendar_id": calendar.calendar_id,
+        "aggregation_policy": aggregation.canonical(),
+        "aggregation_policy_id": aggregation.policy_id,
+        "aggregation_policy_version": aggregation.policy_version,
+        "raw_artifact_hashes": [item.sha256 for item in artifacts],
+        "raw_artifact_metadata": [item.canonical() for item in artifacts],
+        "normalized_content_hash": normalized_hash,
+        "quality_report_hash": quality_hash,
+        "instrument": config.instrument.canonical_symbol,
+        "timeframe": aggregation.timeframe.value,
+        "quality_policy_identity": policy.identity,
+        "quote_configuration": aggregation.quote_configuration,
+        "ingestion_version": TICK_INGESTION_VERSION,
+        "canonical_schema_version": TICK_CANONICAL_SCHEMA_VERSION,
+    }
+    dataset_id = _hash_json(material)
+    normalized_path = normalized_dir / f"{dataset_id}.jsonl"
+    if normalized_path.exists():
+        if sha256_file(normalized_path)[0] != normalized_hash:
+            raise RuntimeError("immutable normalized tick dataset has conflicting content")
+        staged_path.unlink(missing_ok=True)
+    else:
+        os.replace(staged_path, normalized_path)
+
+    manifest = TickDatasetManifest(
+        dataset_id=dataset_id,
+        source="dukascopy",
+        source_mode="tick",
+        aggregation="15m",
+        price_sides=aggregation.price_sides,
+        volume_sides=aggregation.volume_sides,
+        timezone=config.source_timezone,
+        timestamp_semantics=aggregation.timestamp_semantics,
+        calendar_id=calendar.calendar_id,
+        aggregation_policy_id=aggregation.policy_id,
+        aggregation_policy_version=aggregation.policy_version,
+        raw_artifact_hashes=tuple(item.sha256 for item in artifacts),
+        normalized_content_hash=normalized_hash,
+        quality_report_hash=quality_hash,
+        instrument=config.instrument.canonical_symbol,
+        timeframe=aggregation.timeframe.value,
+        coverage_start=coverage_start,
+        coverage_end=coverage_end,
+        quality_policy_identity=policy.identity,
+        quote_configuration=aggregation.quote_configuration,
+        ingestion_version=TICK_INGESTION_VERSION,
+        canonical_schema_version=TICK_CANONICAL_SCHEMA_VERSION,
+        created_at=created_at,
+        artifact_metadata=artifacts,
+    )
+    manifest_path = manifest_dir / f"{dataset_id}.json"
+    quality_report_path = manifest_dir / f"{dataset_id}.quality.json"
+    _write_immutable_json(manifest_path, manifest.canonical())
+    _write_immutable_json(quality_report_path, report.canonical())
+    blockers = _tick_blockers(report, policy=policy)
+    state = (
+        AdmissionState.DETERMINISTIC_TEST_FIXTURE
+        if deterministic_test_fixture
+        else AdmissionState.BLOCKED
+        if blockers
+        else AdmissionState.EMPIRICALLY_QUALIFIED_DATASET
+    )
+    return TickDatasetAdmission(
+        manifest=manifest,
+        quality_report=report,
+        state=state,
+        blockers=blockers,
+        normalized_path=normalized_path,
+        manifest_path=manifest_path,
+        quality_report_path=quality_report_path,
+    )
+
+
 __all__ = [
     "AdmissionPolicy",
     "AdmissionState",
@@ -1039,6 +1609,14 @@ __all__ = [
     "INGESTION_VERSION",
     "RawArtifactMetadata",
     "RawArtifactStore",
+    "TICK_CANONICAL_SCHEMA_VERSION",
+    "TICK_INGESTION_VERSION",
+    "TickDatasetAdmission",
+    "TickDatasetManifest",
+    "TickDatasetQualityReport",
+    "TickArtifactMetadata",
+    "TickRawArtifactMetadata",
+    "admit_dukascopy_ticks",
     "admit_dukascopy_csv",
     "sha256_file",
 ]
