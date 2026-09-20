@@ -183,7 +183,10 @@ class SqlAlchemyPaperStore:
                     select(paper_risk_snapshots)
                     .where(paper_risk_snapshots.c.account_id == account_id)
                     .order_by(
-                        paper_risk_snapshots.c.timestamp.desc(),
+                        # Snapshot ids are allocated while the account row is
+                        # locked.  They are the durable event order; ordering
+                        # by market timestamps would allow an old event to
+                        # masquerade as the current account view.
                         paper_risk_snapshots.c.snapshot_id.desc(),
                     )
                     .limit(1)
@@ -203,7 +206,7 @@ class SqlAlchemyPaperStore:
                 connection.execute(
                     select(paper_risk_snapshots)
                     .where(paper_risk_snapshots.c.account_id == account_id)
-                    .order_by(paper_risk_snapshots.c.timestamp, paper_risk_snapshots.c.snapshot_id)
+                    .order_by(paper_risk_snapshots.c.snapshot_id)
                 )
                 .mappings()
                 .all()
@@ -253,6 +256,48 @@ class SqlAlchemyPaperStore:
                 )
             ).scalars()
             return frozenset(values)
+
+    def active_reservation_order_ids(self, account_id: str) -> frozenset[str]:
+        """Return durable active reservation identities for reconciliation."""
+
+        with self.engine.connect() as connection:
+            values = connection.execute(
+                select(paper_reservations.c.order_id).where(
+                    and_(
+                        paper_reservations.c.account_id == account_id,
+                        paper_reservations.c.active.is_(True),
+                    )
+                )
+            ).scalars()
+            return frozenset(values)
+
+    def active_reservation_bindings(
+        self, account_id: str
+    ) -> tuple[tuple[str, str, str], ...]:
+        """Return active reservation/order authorization identities."""
+
+        with self.engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(
+                        paper_reservations.c.order_id,
+                        paper_reservations.c.intent_id,
+                        paper_reservations.c.risk_decision_id,
+                    )
+                    .where(
+                        and_(
+                            paper_reservations.c.account_id == account_id,
+                            paper_reservations.c.active.is_(True),
+                        )
+                    )
+                    .order_by(paper_reservations.c.order_id)
+                )
+                .all()
+            )
+        return tuple(
+            (str(order_id), str(intent_id), str(decision_id))
+            for order_id, intent_id, decision_id in rows
+        )
 
     # The methods below intentionally require a connection.  The engine owns
     # sequencing and invokes them in one DB transaction with an account row
@@ -357,6 +402,27 @@ class SqlAlchemyPaperStore:
         )
         return sum((_decimal(value) for value in rows), Decimal("0"))
 
+    def locked_active_reservation(
+        self, connection: Connection, order_id: str
+    ) -> tuple[Decimal, Decimal]:
+        row = (
+            connection.execute(
+                select(paper_reservations)
+                .where(
+                    and_(
+                        paper_reservations.c.order_id == order_id,
+                        paper_reservations.c.active.is_(True),
+                    )
+                )
+                .with_for_update()
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            raise PaperTradingError(f"missing active reservation for open order: {order_id}")
+        return _decimal(row["reserved_risk"]), _decimal(row["reserved_cash"])
+
     def has_active_lock(self, connection: Connection, account_id: str) -> bool:
         return (
             connection.execute(
@@ -430,6 +496,7 @@ class SqlAlchemyPaperStore:
             .values(
                 reserved_risk=paper_accounts.c.reserved_risk + reserved_risk,
                 updated_at=order.created_at,
+                state_revision=paper_accounts.c.state_revision + 1,
             )
         )
         self._audit(
@@ -492,6 +559,32 @@ class SqlAlchemyPaperStore:
         )
         return tuple(self._to_order(row) for row in rows)
 
+    def locked_open_orders_for_account(
+        self, connection: Connection, account_id: str
+    ) -> tuple[PaperOrder, ...]:
+        rows = (
+            connection.execute(
+                select(paper_orders)
+                .where(
+                    and_(
+                        paper_orders.c.account_id == account_id,
+                        paper_orders.c.status.in_(
+                            [
+                                PaperOrderStatus.ACCEPTED.value,
+                                PaperOrderStatus.PARTIALLY_FILLED.value,
+                                PaperOrderStatus.CANCEL_REQUESTED.value,
+                            ]
+                        ),
+                    )
+                )
+                .order_by(paper_orders.c.created_at, paper_orders.c.order_id)
+                .with_for_update()
+            )
+            .mappings()
+            .all()
+        )
+        return tuple(self._to_order(row) for row in rows)
+
     def update_order(self, connection: Connection, order: PaperOrder, timestamp: datetime) -> None:
         current = self.locked_order(connection, order.account_id, order.order_id)
         if not current.can_transition_to(order.status):
@@ -499,12 +592,24 @@ class SqlAlchemyPaperStore:
                 f"invalid durable order transition {current.status.value} → {order.status.value}"
             )
         if (
-            order.instrument != current.instrument
+            order.idempotency_key != current.idempotency_key
+            or order.account_id != current.account_id
+            or order.instrument != current.instrument
             or order.side is not current.side
             or order.order_type is not current.order_type
             or order.quantity != current.quantity
+            or order.limit_price != current.limit_price
+            or order.stop_price != current.stop_price
+            or order.time_in_force is not current.time_in_force
+            or order.created_at != current.created_at
+            or order.submitted_at != current.submitted_at
+            or order.expires_at != current.expires_at
             or order.risk_decision_id != current.risk_decision_id
+            or order.risk_policy_id != current.risk_policy_id
+            or order.risk_policy_configuration_id != current.risk_policy_configuration_id
+            or order.sizing_configuration_id != current.sizing_configuration_id
             or order.source_intent_id != current.source_intent_id
+            or order.authorization_action is not current.authorization_action
         ):
             raise PaperTradingError("order transition cannot alter immutable order authorization")
         if order.filled_quantity < current.filled_quantity:
@@ -557,12 +662,22 @@ class SqlAlchemyPaperStore:
         self._audit(connection, fill.account_id, "fill_applied", fill.timestamp, fill=fill)
 
     def record_market_event(
-        self, connection: Connection, order_id: str, timestamp: datetime
+        self, connection: Connection, account_id: str, order_id: str, timestamp: datetime
     ) -> None:
         connection.execute(
             update(paper_orders)
-            .where(paper_orders.c.order_id == order_id)
+            .where(
+                and_(
+                    paper_orders.c.account_id == account_id,
+                    paper_orders.c.order_id == order_id,
+                )
+            )
             .values(last_market_event_at=timestamp)
+        )
+        connection.execute(
+            update(paper_accounts)
+            .where(paper_accounts.c.account_id == account_id)
+            .values(updated_at=timestamp, state_revision=paper_accounts.c.state_revision + 1)
         )
 
     def upsert_position(self, connection: Connection, position: PaperPosition) -> None:
@@ -625,6 +740,7 @@ class SqlAlchemyPaperStore:
                 risk_day=risk_day.isoformat(),
                 risk_day_starting_equity=risk_day_starting_equity,
                 updated_at=timestamp,
+                state_revision=paper_accounts.c.state_revision + 1,
             )
         )
 
@@ -657,7 +773,9 @@ class SqlAlchemyPaperStore:
             update(paper_accounts)
             .where(paper_accounts.c.account_id == order.account_id)
             .values(
-                reserved_risk=paper_accounts.c.reserved_risk - reserved_risk, updated_at=timestamp
+                reserved_risk=paper_accounts.c.reserved_risk - reserved_risk,
+                updated_at=timestamp,
+                state_revision=paper_accounts.c.state_revision + 1,
             )
         )
         self._audit(connection, order.account_id, "reservation_released", timestamp, order=order)
@@ -692,6 +810,14 @@ class SqlAlchemyPaperStore:
                     "created_at": timestamp,
                     "cleared_at": None,
                 },
+            )
+            connection.execute(
+                update(paper_accounts)
+                .where(paper_accounts.c.account_id == account_id)
+                .values(
+                    updated_at=timestamp,
+                    state_revision=paper_accounts.c.state_revision + 1,
+                )
             )
             self._audit(connection, account_id, "risk_lock_activated", timestamp, reason=reason)
 
@@ -863,6 +989,7 @@ class SqlAlchemyPaperStore:
             "fees": value.fees,
             "created_at": value.created_at,
             "updated_at": value.updated_at,
+            "state_revision": value.state_revision,
         }
 
     @staticmethod
@@ -915,6 +1042,7 @@ class SqlAlchemyPaperStore:
             fees=_decimal(row["fees"]),
             created_at=_utc(row["created_at"]),
             updated_at=_utc(row["updated_at"]),
+            state_revision=row["state_revision"] if row["state_revision"] is not None else 0,
         )
 
     @staticmethod

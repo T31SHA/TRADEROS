@@ -9,7 +9,8 @@ does not treat an LLM as a trading authority.
 
 Phase 9 — research validation framework — is complete, but the current
 baseline empirical decision is **INVALID / not evaluable** because the
-repository has no versioned historical market dataset. The
+repository has no versioned, empirically eligible historical market dataset;
+local ignored artifacts are present but their qualification is blocked. The
 repository contains the Phase 1 data foundation, Phase 2 leakage-safe feature
 engine, Phase 3 event-driven backtester, and four deterministic Phase 4
 baselines: Forex trend, Forex breakout, equity momentum, and equity breakout.

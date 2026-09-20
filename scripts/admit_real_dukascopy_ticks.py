@@ -33,6 +33,11 @@ def main() -> int:
     parser.add_argument("--coverage-end", required=True, type=_utc)
     parser.add_argument("--download-timestamp", required=True, type=_utc)
     parser.add_argument("--source-version", default=None)
+    parser.add_argument(
+        "--license-reference",
+        default=None,
+        help="operator-supplied provider terms/license URI or configured evidence reference",
+    )
     parser.add_argument("--data-root", type=Path, default=ROOT / "data")
     args = parser.parse_args()
     if not args.source.is_file():
@@ -71,6 +76,7 @@ def main() -> int:
         normalized_dir=args.data_root / "normalized",
         manifest_dir=args.data_root / "manifests",
         created_at=args.download_timestamp,
+        license_reference=args.license_reference,
     )
     report = admission.quality_report
     print(f"raw_artifact_sha256={metadata.sha256}")

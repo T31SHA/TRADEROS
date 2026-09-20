@@ -33,6 +33,7 @@ class DatasetMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     dataset_version: str = Field(min_length=1)
+    dataset_hash: str | None = None
     provider: str = Field(min_length=1)
     symbol: str = Field(min_length=1)
     timeframe: str = Field(min_length=1)
@@ -44,6 +45,8 @@ class DatasetMetadata(BaseModel):
     created_at: datetime
 
     def model_post_init(self, __context: object) -> None:
+        if self.dataset_hash is not None and not self.dataset_hash.strip():
+            raise ValueError("dataset hash must not be blank")
         require_utc(self.start)
         require_utc(self.end)
         require_utc(self.created_at)

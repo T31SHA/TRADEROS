@@ -106,6 +106,7 @@ def _bars(
             ),
             bid=Decimal("1.1004") + Decimal(index) / Decimal("10000"),
             ask=Decimal("1.1006") + Decimal(index) / Decimal("10000"),
+            quote_timestamp=BASE + timeframe.duration * index,
             source="fixture",
             ingestion_timestamp=BASE,
         )

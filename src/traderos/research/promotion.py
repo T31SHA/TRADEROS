@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from math import isfinite
 
 from traderos.research.governance import ResearchWarning
 from traderos.research.models import ResearchError
@@ -40,7 +41,10 @@ class PromotionPolicy:
             raise ResearchError("promotion policy identity and justification must not be blank")
         if self.minimum_trade_count < 1:
             raise ResearchError("promotion policy minimum trade count must be positive")
-        if self.allowed_adjusted_p_value is not None and not 0 < self.allowed_adjusted_p_value <= 1:
+        if self.allowed_adjusted_p_value is not None and (
+            not isfinite(self.allowed_adjusted_p_value)
+            or not 0 < self.allowed_adjusted_p_value <= 1
+        ):
             raise ResearchError("promotion policy adjusted p-value must lie in (0, 1]")
 
 
@@ -57,6 +61,26 @@ class PromotionEvidence:
     adjusted_p_value: float | None
     trade_count: int
     warnings: tuple[ResearchWarning, ...] = ()
+
+    def __post_init__(self) -> None:
+        flags = (
+            self.dataset_qualified,
+            self.oos_locked_and_pristine,
+            self.risk_policy_compatible,
+            self.walk_forward_positive,
+            self.oos_cost_adjusted_positive,
+            self.robustness_survives,
+            self.parameter_stable,
+            self.regime_stable,
+        )
+        if any(value is not None and type(value) is not bool for value in flags):
+            raise ResearchError("promotion evidence flags must be boolean or unavailable")
+        if isinstance(self.trade_count, bool) or self.trade_count < 0:
+            raise ResearchError("promotion evidence trade count must be non-negative")
+        if self.adjusted_p_value is not None and (
+            not isfinite(self.adjusted_p_value) or not 0 <= self.adjusted_p_value <= 1
+        ):
+            raise ResearchError("promotion evidence adjusted p-value must lie in [0, 1]")
 
 
 def evaluate_promotion(policy: PromotionPolicy, evidence: PromotionEvidence) -> PromotionDecision:

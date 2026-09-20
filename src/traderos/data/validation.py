@@ -86,6 +86,11 @@ def normalize_and_validate_candidate(
             ingestion_timestamp=normalize_timestamp(ingestion_timestamp),
             bid=candidate.bid,
             ask=candidate.ask,
+            quote_timestamp=(
+                normalize_timestamp(candidate.quote_timestamp, candidate.source_timezone)
+                if candidate.quote_timestamp is not None
+                else None
+            ),
             spread=candidate.spread,
             adjusted_close=candidate.adjusted_close,
             trade_count=candidate.trade_count,

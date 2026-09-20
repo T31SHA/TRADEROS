@@ -1,0 +1,57 @@
+{
+  "schema_version": "apex-m5-acquisition-manifest.v1",
+  "plan_id": "apex-m5-acquisition-20260919-eurusd",
+  "manifest_status": "BLOCKED_RIGHTS",
+  "created_at": "2026-09-19T17:57:30Z",
+  "requests_made": 0,
+  "downloaded_bytes": 0,
+  "verified_bytes": 0,
+  "segments": [
+    {
+      "segment_id": "pilot-2024-01-01T00:00:00Z-2024-01-01T06:00:00Z",
+      "requested_start": "2024-01-01T00:00:00Z",
+      "requested_end_exclusive": "2024-01-01T06:00:00Z",
+      "endpoint": "https://datafeed.dukascopy.com/datafeed/EURUSD/<YEAR>/<ZERO_BASED_MONTH>/<DAY>/<HOUR>h_ticks.bi5",
+      "status": "NOT_ATTEMPTED",
+      "http_status": null,
+      "result_status": null,
+      "byte_size": 0,
+      "sha256": null,
+      "retrieved_at": null,
+      "retry_history": [],
+      "decoder_or_converter": null,
+      "completion": false,
+      "reason": "Rights applicability and zero-cost access were not established; no endpoint request was made."
+    },
+    {
+      "segment_id": "bulk-2024-01-01T00:00:00Z-2026-01-01T00:00:00Z",
+      "requested_start": "2024-01-01T00:00:00Z",
+      "requested_end_exclusive": "2026-01-01T00:00:00Z",
+      "endpoint": "https://datafeed.dukascopy.com/datafeed/EURUSD/<YEAR>/<ZERO_BASED_MONTH>/<DAY>/<HOUR>h_ticks.bi5",
+      "status": "NOT_ATTEMPTED",
+      "http_status": null,
+      "result_status": null,
+      "byte_size": 0,
+      "sha256": null,
+      "retrieved_at": null,
+      "retry_history": [],
+      "decoder_or_converter": null,
+      "completion": false,
+      "reason": "Pilot gate did not pass; bulk acquisition is prohibited by the frozen plan."
+    }
+  ],
+  "missing_segments": [],
+  "failed_segments": [],
+  "not_attempted_is_not_missing": true,
+  "rights": {
+    "terms_accepted": false,
+    "credentials_used": false,
+    "paid_resource_created": false,
+    "monetary_cost": 0
+  },
+  "strategy_execution": {
+    "pilot_strategy_run": false,
+    "performance_evaluation": false,
+    "oos_access": false
+  }
+}

@@ -140,6 +140,7 @@ def portfolio(**changes: object) -> PortfolioRiskSnapshot:
         "positions": (),
     }
     values.update(changes)
+    values["position_mark_timestamp"] = values.get("position_mark_timestamp", values["timestamp"])
     return PortfolioRiskSnapshot(**values)  # type: ignore[arg-type]
 
 
@@ -181,8 +182,28 @@ def test_approval_is_quantity_free_but_explicitly_bounded_and_idempotent() -> No
     assert first.authorization.action is RiskAction.NEW_OR_INCREASE
     assert first.authorization.max_new_notional == Decimal("1000")
     assert first.authorization.max_loss_at_stop == Decimal("100")
+    assert first.authorization.stop_risk_supported is False
     assert first.decision_id == second.decision_id
     assert first.checks == second.checks
+
+
+def test_new_authorization_includes_leverage_headroom() -> None:
+    result = decision(
+        config=parameters(
+            max_trade_notional=Decimal("5000"),
+            max_gross_exposure=Decimal("50000"),
+            max_net_exposure=Decimal("50000"),
+            max_long_exposure=Decimal("50000"),
+            max_instrument_exposure=Decimal("50000"),
+            max_asset_class_exposure=Decimal("50000"),
+        ),
+        portfolio=portfolio(
+            positions=(RiskPositionSnapshot(instrument("GBP/USD"), Decimal("19000")),)
+        ),
+    )
+    assert result.status is RiskDecisionStatus.APPROVE
+    assert result.authorization is not None
+    assert result.authorization.max_new_notional == Decimal("1000")
 
 
 def test_kill_switch_has_absolute_veto_authority() -> None:

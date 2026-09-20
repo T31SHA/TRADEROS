@@ -1,7 +1,10 @@
 """Phase 9 orchestrates the authoritative Phase 3 simulator end to end."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+
+import pytest
 
 from traderos.backtesting import AlwaysFlatStrategy, BacktestConfig
 from traderos.data.bars import MarketBar
@@ -12,6 +15,7 @@ from traderos.research import (
     DatasetManifest,
     PromotionDecision,
     QualificationPolicy,
+    ResearchError,
     ResearchHypothesis,
     ResearchPlan,
     ResearchScope,
@@ -140,6 +144,7 @@ def test_qualified_candidate_runs_through_phase3_and_exports_deterministic_evide
         spec=spec,
         config=config,
         bars=bars[:6],
+        dataset_bars=bars,
         strategy=AlwaysFlatStrategy(),
     )
     package = engine.build_evidence_package(
@@ -151,3 +156,10 @@ def test_qualified_candidate_runs_through_phase3_and_exports_deterministic_evide
     assert result.experiment_id == config.experiment_id
     assert result.event_count == 6
     assert package.to_json() == package.to_json()
+    with pytest.raises(ResearchError, match="result identity differs"):
+        engine.build_evidence_package(
+            spec=spec,
+            configuration={"phase3_config_id": config.experiment_id},
+            result=replace(result, experiment_id="research-mismatched-result"),
+            promotion=PromotionDecision.HOLD,
+        )

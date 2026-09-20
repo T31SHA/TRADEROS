@@ -1,6 +1,6 @@
 """Real PostgreSQL verification for the Phase 8 durable paper boundary.
 
-Run only against a disposable database whose migrations 001 through 004 have been
+Run only against a disposable database whose migrations 001 through 006 have been
 applied, for example with ``TRADEROS_POSTGRES_TEST_URL`` set by the local test
 harness.  No test creates a network or broker connection.
 """

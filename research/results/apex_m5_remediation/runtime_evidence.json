@@ -1,0 +1,31 @@
+{
+  "ci_python_matrix": [
+    "3.12"
+  ],
+  "experiment_python": {
+    "executable": "/home/sharahbill/TRADEROS/.venv/bin/python",
+    "implementation": "CPython",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+    "version": "3.14.4"
+  },
+  "prior_blocked_experiment_source_identity": {
+    "base_commit": "a15d8f18e514764c19f9aff289b5698eb627ab6e",
+    "dirty_state": "dirty",
+    "snapshot_content_digest": "85ed34292520113c1de4faeca1130c8971bfd05d13e6ff2cdb46da64e702fb67",
+    "snapshot_file_count": 186
+  },
+  "resolved_dependencies": {
+    "mypy": "1.20.2",
+    "psycopg": "3.3.5",
+    "pydantic": "2.13.5",
+    "pydantic-settings": "2.15.0",
+    "pytest": "8.4.2",
+    "ruff": "0.16.6",
+    "sqlalchemy": "2.0.52",
+    "traderos": "0.1.0"
+  },
+  "runtime_verdict": "EXPERIMENT_RUNTIME_MEASURED_CI_RUNTIME_NOT_EXACT",
+  "schema_version": "apex-m5-runtime-evidence.v1",
+  "source_snapshot_note": "The blocked experiment snapshot remains preserved. This remediation script and the license-reference admission change are newer working-tree code; any future empirical run must collect a new source snapshot.",
+  "supported_python": ">=3.12"
+}

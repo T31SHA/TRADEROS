@@ -3,10 +3,11 @@
 ## Executive decision
 
 **TRADEROS PHASE 9 — RESEARCH VALIDATION: INVALID for empirical strategy
-evaluation.** The repository contains no versioned historical `MarketBar`
-dataset, no configured research universe, and no immutable date range from
-which a development/walk-forward/locked-OOS split can be derived. The data
-inventory is recorded in
+evaluation.** The repository contains no versioned, empirically eligible
+historical `MarketBar` dataset, no configured research universe, and no
+approved immutable date range from which a development/walk-forward/locked-OOS
+split can be derived. Local artifacts are inventoried, but their qualification
+is rejected. The data inventory is recorded in
 [`research/results/phase9_baseline_data_inventory.json`](../research/results/phase9_baseline_data_inventory.json).
 
 This is not evidence that any baseline is unprofitable, and it is not a reason
@@ -150,8 +151,8 @@ The baseline parameter definitions remain frozen and unmodified:
 
 ## Regime and fusion findings
 
-**INCONCLUSIVE.** There is no historical dataset on which to condition the
-existing Phase 5 trend, volatility, liquidity, data/session states or measure
+**INCONCLUSIVE.** There is no empirically eligible historical dataset on which
+to condition the existing Phase 5 trend, volatility, liquidity, data/session states or measure
 the Phase 6 fusion policy. No regime rule, filter, weighting, or fusion policy
 was changed. It is therefore unknown whether fusion diversifies returns,
 duplicates signals, changes drawdown overlap, or improves risk-adjusted

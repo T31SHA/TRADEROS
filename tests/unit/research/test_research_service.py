@@ -1,11 +1,13 @@
 """Service-level failure modes preserve immutable Phase 9 boundaries."""
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from traderos.research import ResearchError, ResearchScope, ResearchValidationEngine
-from traderos.research.validation import ChronologicalValidationProtocol
+from traderos.research.models import TemporalRange
+from traderos.research.validation import ChronologicalValidationProtocol, ValidationFold
 
 
 def test_service_rejects_mismatched_walk_forward_results_and_selects_fdr_method() -> None:
@@ -15,12 +17,75 @@ def test_service_rejects_mismatched_walk_forward_results_and_selects_fdr_method(
     assert engine.run_statistical_validation({"a": 0.01}, arbitrary_dependence=False) == {"a": 0.01}
     assert engine.run_statistical_validation({"a": 0.01}, arbitrary_dependence=True) == {"a": 0.01}
     assert engine.run_monte_carlo((0.01, -0.01), simulations=4, seed=1, block_size=1).seed == 1
-    fold = SimpleNamespace(fold_index=4)
-    result = SimpleNamespace(metrics=SimpleNamespace(total_return=0.02))
+    fold = ValidationFold(
+        fold_index=4,
+        train=TemporalRange(
+            datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 2, tzinfo=UTC)
+        ),
+        validation=TemporalRange(
+            datetime(2026, 1, 2, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)
+        ),
+        test=TemporalRange(
+            datetime(2026, 1, 3, tzinfo=UTC), datetime(2026, 1, 4, tzinfo=UTC)
+        ),
+        purge=timedelta(0),
+        embargo=timedelta(0),
+    )
+    result = SimpleNamespace(
+        config=SimpleNamespace(start=fold.test.start, end=fold.test.end),
+        metrics=SimpleNamespace(total_return=0.02),
+    )
     assert engine.run_walk_forward((fold,), (result,))["worst_total_return"] == 0.02
     with pytest.raises(ResearchError, match="unavailable"):
         engine.run_walk_forward(
-            (fold,), (SimpleNamespace(metrics=SimpleNamespace(total_return=None)),)
+            (
+                fold,
+            ),
+            (
+                SimpleNamespace(
+                    config=SimpleNamespace(start=fold.test.start, end=fold.test.end),
+                    metrics=SimpleNamespace(total_return=None),
+                ),
+            ),
+        )
+
+
+def test_walk_forward_rejects_reordered_or_period_mismatched_folds() -> None:
+    engine = ResearchValidationEngine()
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+
+    def fold(index: int, offset: int) -> ValidationFold:
+        train = TemporalRange(base + timedelta(days=offset), base + timedelta(days=offset + 1))
+        validation = TemporalRange(
+            base + timedelta(days=offset + 1), base + timedelta(days=offset + 2)
+        )
+        test = TemporalRange(base + timedelta(days=offset + 2), base + timedelta(days=offset + 3))
+        return ValidationFold(index, train, validation, test, timedelta(0), timedelta(0))
+
+    first = fold(0, 0)
+    second = fold(1, 3)
+    def result(item: ValidationFold) -> SimpleNamespace:
+        return SimpleNamespace(
+            config=SimpleNamespace(start=item.test.start, end=item.test.end),
+            metrics=SimpleNamespace(total_return=0.01),
+        )
+    with pytest.raises(ResearchError, match="chronological"):
+        engine.run_walk_forward((second, first), (result(second), result(first)))
+    with pytest.raises(ResearchError, match="period differs"):
+        engine.run_walk_forward(
+            (first,),
+            (
+                SimpleNamespace(
+                    config=SimpleNamespace(start=second.test.start, end=second.test.end),
+                    metrics=SimpleNamespace(total_return=0.01),
+                ),
+            ),
+        )
+    reversed_periods = (fold(0, 3), fold(1, 0))
+    with pytest.raises(ResearchError, match="test periods"):
+        engine.run_walk_forward(
+            reversed_periods,
+            tuple(result(item) for item in reversed_periods),
         )
 
 

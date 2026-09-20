@@ -1,0 +1,68 @@
+{
+  "schema_version": "apex-m5-acquisition-terms-evidence.v1",
+  "reviewed_at": "2026-09-19T17:57:30Z",
+  "verdict": "BLOCKED_RIGHTS",
+  "evidence": [
+    {
+      "id": "official-data-export",
+      "source_url": "https://www.dukascopy.com/wiki/en/development/data-export/",
+      "status": "WEB_VERIFIED",
+      "facts": [
+        "The official documentation describes Dukascopy .bi5 tick files, UTC millisecond timestamps, bid/ask integer prices, and separate float volumes.",
+        "The documented S3 export uses bucket cfg-public-proper-wallaby and Requester Pays requests.",
+        "The documented export path uses a zero-based month and daily tick objects."
+      ],
+      "limitations": [
+        "The page documents a mechanism and format but does not, by itself, grant this research workflow a license.",
+        "Requester Pays is incompatible with the current zero-monetary-cost limit unless separately authorized."
+      ]
+    },
+    {
+      "id": "official-europe-terms",
+      "source_url": "https://www.dukascopy.com/plugins/cont.php?branch=eu&ref_id=198910",
+      "status": "WEB_VERIFIED_APPLICABILITY_UNRESOLVED",
+      "facts": [
+        "The terms permit personal non-commercial downloading in a limited way.",
+        "The terms prohibit constructing a database from website information.",
+        "The terms prohibit scraper, robot, bot, data-mining, computer-code, or other automated acquisition without prior express written consent."
+      ],
+      "limitations": [
+        "The exact contractual applicability of this Europe website terms page to the public raw-tick datafeed endpoint is unresolved.",
+        "Because applicability is unresolved, automated pilot and bulk requests are not permitted under the fail-closed research gate."
+      ]
+    },
+    {
+      "id": "official-xml-license",
+      "source_url": "https://www.dukascopy.com/plugins/cont.php?ref_id=1273",
+      "status": "WEB_VERIFIED_INSUFFICIENT_FOR_RAW_TICKS",
+      "facts": [
+        "The agreement concerns XML data and describes registration, review, and approval before access.",
+        "It grants only the uses expressly described in that agreement."
+      ],
+      "limitations": [
+        "It is not evidence of permission for the raw bid/ask .bi5 or datafeed tick workflow.",
+        "No registration or approval was performed."
+      ]
+    },
+    {
+      "id": "downloader-documentation",
+      "source_url": "https://github.com/Leo4815162342/dukascopy-node/wiki/Downloading-tick-data",
+      "status": "DOCUMENTATION_VERIFIED_NOT_PROVIDER_TERMS",
+      "facts": [
+        "The public downloader documents tick CLI usage and output fields timestamp, askPrice, bidPrice, askVolume, and bidVolume.",
+        "It warns that long tick ranges can be gigabytes and supports batching and pauses."
+      ],
+      "limitations": [
+        "A downloader's documentation is not a provider license or authenticity proof.",
+        "The downloader was not installed or executed."
+      ]
+    }
+  ],
+  "operator_inputs_required": [
+    "Written provider permission or an applicable license explicitly covering automated historical raw EUR/USD bid/ask tick acquisition from the exact endpoint, local non-redistributed quantitative research, and database storage.",
+    "A zero-cost access path, or explicit operator authorization to incur any Requester Pays/cloud charge. The current run cannot spend money.",
+    "Provider/source record identifying the instrument, quote convention, timestamp and volume semantics, and exact coverage.",
+    "A downloader/exporter release identity and acquisition receipt/log; do not treat it as a provider revision.",
+    "If access requires an account or credentials, the operator must handle that authorization separately; this run will not request or use credentials."
+  ]
+}

@@ -30,8 +30,9 @@ Sizing is deterministic Decimal arithmetic. For new/increased risk it floors
 `min(max_new_notional, account risk capacity remaining, long cash) / executable
 quote` to the configured quantity increment. For Phase 7 `REDUCTION_ONLY` it
 can only close the existing signed position up to the authorized reduction
-notional. It never invents a stop model, increases authorization, or mutates a
-portfolio. Phase 8 v1 supports same-currency settlement only and models no FX
+notional. It never invents a stop model or treats a stop price as a guaranteed
+maximum loss, increases authorization, or mutates a portfolio. Phase 8 v1
+supports same-currency settlement only and models no FX
 conversion or broker margin.
 
 ## Durable state and transactions
@@ -54,8 +55,9 @@ commit together. PostgreSQL uses row locks; uniqueness constraints are a second
 line of defence against duplicate orders, decisions, reservations, and fills.
 
 Open orders and reservations survive restart. `recover` returns durable state;
-`reconcile` fail-loudly verifies fill/order quantity conservation and
-reservation totals rather than repairing financial state.
+`reconcile` fail-loudly verifies fill/order quantity conservation, exact
+open-order/reservation identity, and reservation totals rather than repairing
+financial state.
 
 ## Lifecycle and execution
 
@@ -76,9 +78,16 @@ A quote must be UTC-aware, current within configuration, and strictly later
 than submission. It is also a valuation event: after fills, it marks an open
 position in its instrument at the quote midpoint. Bid/ask plus adverse slippage
 remain the executable fill prices; a valuation mark is never a fill. Every
-order records the last market event processed, so a
-replayed or out-of-order quote cannot duplicate a fill. The engine obtains no
-market data itself.
+order records the last market event processed, so a replayed or out-of-order
+quote cannot duplicate a fill. A risk lock blocks new/increasing risk and
+cancels outstanding risk-increasing paper orders in the same transaction;
+explicitly authorized reduction-only orders remain subject to signed-position
+and quantity checks. The engine obtains no market data itself.
+
+DAY orders expire at the next UTC midnight unless an earlier expiry is supplied.
+IOC orders cancel/expire any unfilled remainder after a partial fill. A delayed
+quote cannot overwrite a newer position mark. Paper account state has a
+monotonic revision, and a decision bound to an older revision is rejected.
 
 ## Accounting and locks
 
@@ -113,8 +122,8 @@ execution. It remains offline and deterministic.
 
 The PostgreSQL integration suite is intentionally opt-in and skips unless
 `TRADEROS_POSTGRES_TEST_URL` names a disposable database that already has
-migrations 001 through 004. `scripts/verify_phase8_postgres.sh` applies all
-four migrations and runs the suite when given matching caller-supplied libpq and
+migrations 001 through 006. `scripts/verify_phase8_postgres.sh` applies all
+six migrations and runs the suite when given matching caller-supplied libpq and
 SQLAlchemy URLs. The suite uses independently spawned processes and database
 connections for reservation, idempotency, and fill/cancel races; it does not
 substitute threads or SQLite for those assertions.

@@ -1,5 +1,7 @@
 """Phase 9 experiment persistence remains immutable and retry-safe."""
 
+import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -18,6 +20,7 @@ from traderos.research.models import (
     ResearchScope,
     TemporalRange,
 )
+from traderos.research.provenance_cli import main as provenance_cli_main
 from traderos.research.registry import ExperimentRegistry, RegisteredExperiment
 
 BASE = datetime(2024, 1, 2, tzinfo=UTC)
@@ -102,6 +105,43 @@ def test_registry_persists_exact_lineage_and_identical_retry_is_idempotent(tmp_p
     assert payload["experiment"]["dataset_hash"] == record.spec.dataset.dataset_hash
 
 
+def test_registry_lists_a_bounded_deterministic_experiment_index(tmp_path: Path) -> None:
+    registry = ExperimentRegistry(tmp_path / "registry")
+    first = _registered()
+    second_spec = replace(first.spec, parameters=(("lookback", "3"),))
+    second = RegisteredExperiment(
+        spec=second_spec,
+        result=replace(first.result, experiment_id=second_spec.experiment_id),
+    )
+    registry.record(second)
+    registry.record(first)
+    (registry.root / "unrelated.json").write_text("{}", encoding="utf-8")
+    (registry.root / "research-not-a-file.json").mkdir()
+
+    expected = tuple(sorted((first.spec.experiment_id, second.spec.experiment_id)))
+    assert registry.list_experiment_ids() == expected
+    assert registry.list_experiment_ids(limit=1) == expected[:1]
+    with pytest.raises(ResearchError, match="limit must be positive"):
+        registry.list_experiment_ids(limit=0)
+    assert ExperimentRegistry(tmp_path / "missing").list_experiment_ids() == ()
+
+
+def test_provenance_cli_lists_registry_ids_without_database_access(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    registry = ExperimentRegistry(tmp_path / "registry")
+    record = _registered()
+    registry.record(record)
+    monkeypatch.setenv("TRADEROS_EXPERIMENT_REGISTRY", str(registry.root))
+    monkeypatch.delenv("TRADEROS_DATABASE_URL", raising=False)
+
+    assert provenance_cli_main(["--list-experiments", "--experiment-limit", "1"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "experiment_limit": 1,
+        "experiments": [record.spec.experiment_id],
+    }
+
+
 def test_registry_rejects_conflicting_retry_and_unsafe_or_missing_reads(tmp_path: Path) -> None:
     registry = ExperimentRegistry(tmp_path / "registry")
     registry.record(_registered())
@@ -130,6 +170,53 @@ def test_registry_rejects_bad_root_and_corrupt_or_unknown_documents(tmp_path: Pa
     unknown_path.write_text("{}", encoding="utf-8")
     with pytest.raises(ResearchError, match="unknown schema"):
         registry.read("research-unknown")
+
+
+def test_registry_rejects_tampered_result_hash_and_records_locked_oos_access(
+    tmp_path: Path,
+) -> None:
+    registry = ExperimentRegistry(tmp_path / "registry")
+    record = _registered()
+    path = registry.record(record)
+    original_bytes = path.read_bytes()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["result"]["result_hash"] = "0" * 64
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ResearchError, match="hash mismatch"):
+        registry.read(record.spec.experiment_id)
+    path.write_bytes(original_bytes)
+
+    oos = replace(
+        record.spec,
+        scope=ResearchScope.LOCKED_OUT_OF_SAMPLE,
+        selection_eligible=False,
+        frozen_from_experiment_id=record.spec.experiment_id,
+    )
+    access = registry.record_oos_access(experiment=oos, accessed_at=BASE)
+    assert access.exists()
+    assert registry.record_oos_access(experiment=oos, accessed_at=BASE) == access
+
+
+def test_registry_rejects_unregistered_or_incompatible_oos_parent(tmp_path: Path) -> None:
+    registry = ExperimentRegistry(tmp_path / "registry")
+    record = _registered()
+    oos = replace(
+        record.spec,
+        scope=ResearchScope.LOCKED_OUT_OF_SAMPLE,
+        selection_eligible=False,
+        frozen_from_experiment_id="research-missing-parent",
+    )
+    with pytest.raises(ResearchError, match="not registered"):
+        registry.record_oos_access(experiment=oos, accessed_at=BASE)
+
+    registry.record(record)
+    incompatible = replace(
+        oos,
+        frozen_from_experiment_id=record.spec.experiment_id,
+        strategy_version="2",
+    )
+    with pytest.raises(ResearchError, match="lineage differs"):
+        registry.record_oos_access(experiment=incompatible, accessed_at=BASE)
 
 
 def test_locked_oos_result_flags_must_match_scope_and_contamination_is_invalid() -> None:

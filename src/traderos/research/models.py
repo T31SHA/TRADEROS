@@ -14,9 +14,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
+from typing import cast
 
 from traderos.backtesting.models import BacktestConfig, CostConfig, SlippageConfig, SpreadConfig
 from traderos.data.bars import MarketBar
+from traderos.data.hashing import market_bar_content_hash, market_bar_content_payload
 from traderos.data.lineage import AdjustmentPolicy
 from traderos.data.time import require_utc
 from traderos.data.timeframes import Timeframe
@@ -194,6 +196,18 @@ class DatasetManifest:
             raise ResearchError("dataset manifest symbols must be unique")
 
     @classmethod
+    def _content_payload(cls, bars: Sequence[MarketBar]) -> dict[str, object]:
+        return market_bar_content_payload(bars)
+
+    @classmethod
+    def content_hash(cls, bars: Sequence[MarketBar]) -> str:
+        """Hash the exact canonical parent bars used by a research manifest."""
+
+        if not bars:
+            raise ResearchError("a dataset content hash requires at least one bar")
+        return market_bar_content_hash(bars)
+
+    @classmethod
     def from_bars(
         cls,
         *,
@@ -222,35 +236,9 @@ class DatasetManifest:
         identities = [(item.timestamp, item.symbol, item.source) for item in ordered]
         if len(set(identities)) != len(identities):
             raise ResearchError("dataset manifest bars must have unique logical identities")
-        payload = {
-            "timeframe": first.timeframe.value,
-            "adjustment_policy": first.adjustment_policy.value,
-            "bars": [
-                {
-                    "symbol": item.symbol,
-                    "timestamp": item.timestamp.isoformat(),
-                    "open": str(item.open),
-                    "high": str(item.high),
-                    "low": str(item.low),
-                    "close": str(item.close),
-                    "volume": str(item.volume) if item.volume is not None else None,
-                    "source": item.source,
-                    "bid": str(item.bid) if item.bid is not None else None,
-                    "ask": str(item.ask) if item.ask is not None else None,
-                    "spread": str(item.spread) if item.spread is not None else None,
-                    "adjusted_close": (
-                        str(item.adjusted_close) if item.adjusted_close is not None else None
-                    ),
-                    "trade_count": item.trade_count,
-                    "vwap": str(item.vwap) if item.vwap is not None else None,
-                }
-                for item in ordered
-            ],
-        }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return cls(
             dataset_version=dataset_version,
-            dataset_hash=hashlib.sha256(encoded).hexdigest(),
+            dataset_hash=cls.content_hash(ordered),
             symbols=tuple(sorted({item.symbol for item in ordered})),
             timeframe=first.timeframe,
             period=TemporalRange(
@@ -272,6 +260,170 @@ class DatasetManifest:
             self.historical_membership_available
             and self.delistings_available
             and self.corporate_actions_verified
+        )
+
+
+@dataclass(frozen=True)
+class ExperimentInputBinding:
+    """Exact immutable dataset and qualification inputs for a new experiment."""
+
+    dataset_id: str
+    dataset_content_hash: str
+    manifest_hash: str
+    qualification_id: str
+    qualification_policy_id: str
+    qualification_policy_version: str
+    evaluation_period: TemporalRange
+    warmup_period: TemporalRange | None
+    instrument_scope: tuple[str, ...]
+    data_slice_identity: str
+    feature_input_lineage: tuple[str, ...] = ()
+    fixture: bool = False
+
+    def __post_init__(self) -> None:
+        text_values = (
+            self.dataset_id,
+            self.dataset_content_hash,
+            self.manifest_hash,
+            self.qualification_id,
+            self.qualification_policy_id,
+            self.qualification_policy_version,
+            self.data_slice_identity,
+        )
+        if any(not value.strip() for value in text_values):
+            raise ResearchError("experiment input binding identities must not be blank")
+        if not self.instrument_scope or any(not value.strip() for value in self.instrument_scope):
+            raise ResearchError("experiment input binding requires instruments")
+        if len(set(self.instrument_scope)) != len(self.instrument_scope):
+            raise ResearchError("experiment input binding instruments must be unique")
+        if any(not value.strip() for value in self.feature_input_lineage):
+            raise ResearchError("experiment feature lineage references must not be blank")
+        if self.warmup_period is not None and self.warmup_period.end > self.evaluation_period.start:
+            raise ResearchError("experiment warmup must end before evaluation begins")
+        if self.data_slice_identity != self.derived_slice_identity():
+            raise ResearchError("experiment data slice identity does not match its declaration")
+
+    def derived_slice_identity(self) -> str:
+        payload = {
+            "dataset_id": self.dataset_id,
+            "dataset_content_hash": self.dataset_content_hash,
+            "manifest_hash": self.manifest_hash,
+            "evaluation_period": {
+                "start": self.evaluation_period.start.isoformat(),
+                "end": self.evaluation_period.end.isoformat(),
+            },
+            "warmup_period": (
+                {
+                    "start": self.warmup_period.start.isoformat(),
+                    "end": self.warmup_period.end.isoformat(),
+                }
+                if self.warmup_period is not None
+                else None
+            ),
+            "instrument_scope": self.instrument_scope,
+            "feature_input_lineage": self.feature_input_lineage,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "schema_version": "experiment-input-binding.v1",
+            "dataset_id": self.dataset_id,
+            "dataset_content_hash": self.dataset_content_hash,
+            "manifest_hash": self.manifest_hash,
+            "qualification_id": self.qualification_id,
+            "qualification_policy_id": self.qualification_policy_id,
+            "qualification_policy_version": self.qualification_policy_version,
+            "evaluation_period": {
+                "start": self.evaluation_period.start.isoformat(),
+                "end": self.evaluation_period.end.isoformat(),
+            },
+            "warmup_period": (
+                {
+                    "start": self.warmup_period.start.isoformat(),
+                    "end": self.warmup_period.end.isoformat(),
+                }
+                if self.warmup_period is not None
+                else None
+            ),
+            "instrument_scope": list(self.instrument_scope),
+            "data_slice_identity": self.data_slice_identity,
+            "feature_input_lineage": list(self.feature_input_lineage),
+            "fixture": self.fixture,
+        }
+
+    @classmethod
+    def from_canonical(cls, payload: object) -> ExperimentInputBinding:
+        fields = {
+            "schema_version",
+            "dataset_id",
+            "dataset_content_hash",
+            "manifest_hash",
+            "qualification_id",
+            "qualification_policy_id",
+            "qualification_policy_version",
+            "evaluation_period",
+            "warmup_period",
+            "instrument_scope",
+            "data_slice_identity",
+            "feature_input_lineage",
+            "fixture",
+        }
+        if not isinstance(payload, dict) or set(payload) != fields:
+            raise ResearchError("experiment input binding has unknown or missing fields")
+        if payload["schema_version"] != "experiment-input-binding.v1":
+            raise ResearchError("experiment input binding schema is unsupported")
+        identity_fields = (
+            "dataset_id",
+            "dataset_content_hash",
+            "manifest_hash",
+            "qualification_id",
+            "qualification_policy_id",
+            "qualification_policy_version",
+            "data_slice_identity",
+        )
+        if any(
+            not isinstance(payload[field], str) or not payload[field].strip()
+            for field in identity_fields
+        ):
+            raise ResearchError("experiment input binding identity is malformed")
+
+        def parse_range(value: object, field: str) -> TemporalRange:
+            if not isinstance(value, dict) or set(value) != {"start", "end"}:
+                raise ResearchError(f"experiment input binding {field} is malformed")
+            try:
+                return TemporalRange(
+                    datetime.fromisoformat(cast(str, value["start"])),
+                    datetime.fromisoformat(cast(str, value["end"])),
+                )
+            except (TypeError, ValueError) as exc:
+                raise ResearchError(f"experiment input binding {field} is malformed") from exc
+
+        evaluation_period = parse_range(payload["evaluation_period"], "evaluation period")
+        warmup_value = payload["warmup_period"]
+        warmup_period = None if warmup_value is None else parse_range(warmup_value, "warmup period")
+        scope = payload["instrument_scope"]
+        lineage = payload["feature_input_lineage"]
+        if not isinstance(scope, list) or any(not isinstance(item, str) for item in scope):
+            raise ResearchError("experiment input binding instrument scope is malformed")
+        if not isinstance(lineage, list) or any(not isinstance(item, str) for item in lineage):
+            raise ResearchError("experiment feature lineage is malformed")
+        if type(payload["fixture"]) is not bool:
+            raise ResearchError("experiment fixture classification is malformed")
+        return cls(
+            dataset_id=cast(str, payload["dataset_id"]),
+            dataset_content_hash=cast(str, payload["dataset_content_hash"]),
+            manifest_hash=cast(str, payload["manifest_hash"]),
+            qualification_id=cast(str, payload["qualification_id"]),
+            qualification_policy_id=cast(str, payload["qualification_policy_id"]),
+            qualification_policy_version=cast(str, payload["qualification_policy_version"]),
+            evaluation_period=evaluation_period,
+            warmup_period=warmup_period,
+            instrument_scope=tuple(scope),
+            data_slice_identity=cast(str, payload["data_slice_identity"]),
+            feature_input_lineage=tuple(lineage),
+            fixture=payload["fixture"],
         )
 
 
@@ -299,7 +451,8 @@ class CostScenario:
                     minimum=config.commission.minimum * self.multiplier,
                 ),
                 "spread": SpreadConfig(
-                    fallback_absolute=config.spread.fallback_absolute * self.multiplier
+                    fallback_absolute=config.spread.fallback_absolute * self.multiplier,
+                    observed_multiplier=self.multiplier,
                 ),
                 "slippage": SlippageConfig(absolute=config.slippage.absolute * self.multiplier),
             }
@@ -329,6 +482,7 @@ class ExperimentSpec:
     frozen_from_experiment_id: str | None = None
     research_family_id: str | None = None
     candidate_id: str | None = None
+    input_binding: ExperimentInputBinding | None = None
 
     def __post_init__(self) -> None:
         required = (
@@ -352,6 +506,20 @@ class ExperimentSpec:
             raise ResearchError(
                 "research family and candidate identities must be supplied together"
             )
+        if self.input_binding is not None:
+            if self.input_binding.dataset_content_hash != self.dataset.dataset_hash:
+                raise ResearchError("experiment input binding dataset content does not match spec")
+            if self.input_binding.evaluation_period != self.period:
+                raise ResearchError(
+                    "experiment input binding evaluation period does not match spec"
+                )
+            if not set(self.input_binding.instrument_scope).issubset(self.dataset.symbols):
+                raise ResearchError(
+                    "experiment input binding instrument scope exceeds dataset scope"
+                )
+            fixture_quality = self.dataset.quality_status.lower().endswith("fixture")
+            if fixture_quality != self.input_binding.fixture:
+                raise ResearchError("experiment fixture classification does not match dataset")
 
     @classmethod
     def from_parameters(
@@ -366,7 +534,7 @@ class ExperimentSpec:
         return cls(parameters=pairs, **kwargs)  # type: ignore[arg-type]
 
     def canonical(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "dataset_version": self.dataset.dataset_version,
             "dataset_hash": self.dataset.dataset_hash,
             "split_id": self.split_id,
@@ -388,6 +556,9 @@ class ExperimentSpec:
             "research_family_id": self.research_family_id,
             "candidate_id": self.candidate_id,
         }
+        if self.input_binding is not None:
+            payload["input_binding"] = self.input_binding.canonical()
+        return payload
 
     @property
     def experiment_id(self) -> str:
@@ -486,6 +657,7 @@ __all__ = [
     "CostScenario",
     "DatasetManifest",
     "ExperimentResult",
+    "ExperimentInputBinding",
     "ExperimentSpec",
     "OosContaminationError",
     "ResearchDecision",

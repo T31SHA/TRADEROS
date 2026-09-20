@@ -291,7 +291,7 @@ class RiskFirewall:
         return True
 
     def _new_risk_limits(
-        self, exposure: _Exposure, direction: FusionDirection
+        self, exposure: _Exposure, direction: FusionDirection, equity: Decimal
     ) -> tuple[tuple[str, Decimal, RiskReasonCode], ...]:
         if direction is FusionDirection.LONG:
             directional_remaining = self.parameters.max_long_exposure - exposure.long
@@ -322,6 +322,11 @@ class RiskFirewall:
                 "asset_class_exposure",
                 self.parameters.max_asset_class_exposure - exposure.asset_class,
                 RiskReasonCode.MAX_ASSET_CLASS_EXPOSURE_EXCEEDED,
+            ),
+            (
+                "leverage_headroom",
+                self.parameters.max_leverage * equity - exposure.gross,
+                RiskReasonCode.MAX_LEVERAGE_EXCEEDED,
             ),
         )
 
@@ -396,6 +401,24 @@ class RiskFirewall:
                 decision_timestamp=context.decision_timestamp,
                 maximum_age=self.parameters.max_risk_snapshot_age,
                 stale_reason=RiskReasonCode.STALE_RISK_SNAPSHOT,
+            )
+            marks_current = not snapshot.positions or (
+                snapshot.position_mark_timestamp is not None
+                and snapshot.position_mark_timestamp <= snapshot.timestamp
+                and context.decision_timestamp - snapshot.position_mark_timestamp
+                <= self.parameters.max_risk_snapshot_age
+            )
+            self._check(
+                checks,
+                "position_mark_freshness",
+                marks_current,
+                None if marks_current else RiskReasonCode.STALE_RISK_SNAPSHOT,
+                (
+                    snapshot.position_mark_timestamp.isoformat()
+                    if snapshot.position_mark_timestamp is not None
+                    else None
+                ),
+                str(self.parameters.max_risk_snapshot_age),
             )
             numbers_valid = self._portfolio_numbers_valid(snapshot)
             self._check(
@@ -519,7 +542,7 @@ class RiskFirewall:
                         str(self.parameters.max_pending_intents),
                     )
                     for check_id, remaining, reason in self._new_risk_limits(
-                        exposure, intent.direction
+                        exposure, intent.direction, snapshot.equity
                     ):
                         self._check(
                             checks,
@@ -535,6 +558,7 @@ class RiskFirewall:
         failed = tuple(item for item in checks if not item.passed)
         if failed or exposure is None or action is None:
             return self._decision(context, RiskDecisionStatus.REJECT, tuple(checks), None)
+        assert snapshot is not None and snapshot.equity is not None
 
         if action is RiskAction.REDUCTION_ONLY:
             authorization = RiskAuthorization(
@@ -545,7 +569,8 @@ class RiskFirewall:
             )
         else:
             available_limits = [
-                item[1] for item in self._new_risk_limits(exposure, intent.direction)
+                item[1]
+                for item in self._new_risk_limits(exposure, intent.direction, snapshot.equity)
             ]
             authorization = RiskAuthorization(
                 action=action,
@@ -590,6 +615,9 @@ class RiskFirewall:
                 context.portfolio.timestamp if context.portfolio else None
             ),
             market_snapshot_timestamp=context.market.timestamp if context.market else None,
+            portfolio_snapshot_revision=(
+                context.portfolio.revision if context.portfolio else None
+            ),
         )
 
 

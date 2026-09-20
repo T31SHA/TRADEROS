@@ -106,6 +106,7 @@ def _admit(
     coverage_end: datetime | None = None,
     policy: AdmissionPolicy | None = None,
     aggregation_policy: TickAggregationPolicy | None = None,
+    license_reference: str | None = None,
 ):
     preserved, metadata = _preserve(
         tmp_path,
@@ -123,7 +124,28 @@ def _admit(
         manifest_dir=tmp_path / "manifests",
         created_at=datetime(2024, 1, 3, tzinfo=UTC),
         aggregation_policy=aggregation_policy,
+        license_reference=license_reference,
     )
+
+
+def test_tick_manifest_persists_license_reference_in_dataset_identity(tmp_path: Path) -> None:
+    without_reference = _admit(tmp_path / "without", _fixture_rows())
+    admission = _admit(
+        tmp_path / "with",
+        _fixture_rows(),
+        license_reference="https://provider.example/terms/research",
+    )
+
+    assert (
+        admission.manifest.canonical()["license_reference"]
+        == "https://provider.example/terms/research"
+    )
+    assert admission.manifest.dataset_id != without_reference.manifest.dataset_id
+
+
+def test_tick_admission_rejects_blank_license_reference(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="license reference"):
+        _admit(tmp_path, _fixture_rows(), license_reference=" ")
 
 
 def test_tick_timestamp_normalization_is_exact_utc() -> None:

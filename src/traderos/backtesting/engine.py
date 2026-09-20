@@ -78,7 +78,10 @@ class BacktestEngine:
         self.converter = converter
         self.calendar = calendar
         self.execution = ExecutionSimulator(
-            spread_model=QuoteOrFixedSpreadModel(config.spread.fallback_absolute),
+            spread_model=QuoteOrFixedSpreadModel(
+                config.spread.fallback_absolute,
+                config.spread.observed_multiplier,
+            ),
             slippage_model=FixedSlippageModel(config.slippage.absolute),
             commission_model=CommissionModel(config.commission),
             max_fill_quantity=config.max_fill_quantity,
@@ -163,6 +166,9 @@ class BacktestEngine:
                 equity=snapshot.equity,
                 positions=snapshot.positions,
                 feature_observations=visible_observations,
+                pending_orders=tuple(
+                    scheduled.order for scheduled in pending if scheduled.order.is_open
+                ),
             )
             try:
                 proposals = tuple(strategy.on_event(context))

@@ -140,6 +140,7 @@ def test_lineage_and_quality_records_are_queryable() -> None:
     )
     metadata = DatasetMetadata(
         dataset_version="dataset-test",
+        dataset_hash="dataset-content-hash",
         provider="local",
         symbol="AAPL",
         timeframe="1h",
@@ -181,6 +182,7 @@ def test_lineage_and_quality_records_are_queryable() -> None:
     store.record_ingestion_run(run)
 
     assert store.datasets()[0].dataset_version == "dataset-test"
+    assert store.datasets()[0].dataset_hash == "dataset-content-hash"
     assert store.quality_events()[0].code is QualityCode.DUPLICATE_BAR
     assert store.ingestion_runs()[0].status is IngestionStatus.SUCCESS
     engine.dispose()

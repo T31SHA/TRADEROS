@@ -13,6 +13,7 @@ from traderos.data.bars import BarCandidate, MarketBar
 from traderos.data.calendars import MarketCalendar
 from traderos.data.data_policy import DEFAULT_CONFIGURATION_VERSION
 from traderos.data.errors import IngestionError, TransientProviderError
+from traderos.data.hashing import market_bar_content_hash
 from traderos.data.instruments import Instrument
 from traderos.data.lineage import (
     AdjustmentPolicy,
@@ -307,6 +308,9 @@ class IngestionService:
             self._store.record_dataset(
                 DatasetMetadata(
                     dataset_version=final_version,
+                    dataset_hash=(
+                        market_bar_content_hash(persisted_bars) if persisted_bars else None
+                    ),
                     provider=self._provider.provider_id,
                     symbol=typed_instrument.canonical_symbol,
                     timeframe=request.timeframe.value,

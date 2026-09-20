@@ -1,0 +1,77 @@
+{
+  "basis": "frozen Milestone 5 protocol and existing Dukascopy tick importer",
+  "commands": [
+    "<PYTHON> scripts/admit_real_dukascopy_ticks.py <RAW_CSV> --coverage-start <UTC_START> --coverage-end <UTC_END> --download-timestamp <ACQUISITION_UTC> --source-version <PROVIDER_OR_DOWNLOADER_RELEASE> --license-reference <LICENSE_REFERENCE> --data-root <DATA_ROOT>",
+    "<PYTHON> scripts/run_apex_milestone5.py --dataset-id <NEW_DATASET_ID> --data-root <DATA_ROOT> --output-dir <OUTPUT_ROOT>"
+  ],
+  "coverage_and_design": {
+    "minimum_development_days": 120,
+    "minimum_locked_oos_days": 60,
+    "minimum_total_coverage_days": 180,
+    "selection_rule": "choose coverage and boundaries from methodology and data availability, never strategy returns",
+    "trade_adequacy": {
+      "minimum_closed_trades": 30,
+      "minimum_oos_closed_trades": 10
+    },
+    "walk_forward": "expanding; initial train 10 days; forward test 5 days; only if sample adequacy supports it",
+    "warmup": "25 M15 rows for the predeclared 10/30 EMA lineage, excluded from evaluation"
+  },
+  "do_not_do": [
+    "Do not fill, forward-fill, synthesize, splice, or silently exclude open-session gaps.",
+    "Do not reuse the rejected dataset identity or edit the blocked protocol/result.",
+    "Do not select coverage using strategy returns.",
+    "Do not run strategy performance or access OOS until qualification passes and a new protocol is frozen."
+  ],
+  "identity_rules": {
+    "dataset": "new immutable identity derived from replacement raw bytes and admission configuration",
+    "prior_attempt": "reference the prior BLOCKED_DATA result as historical context only",
+    "protocol": "new protocol record bound to the new dataset; prior frozen protocol is not edited",
+    "qualification": "new qualification record referencing the new dataset and current policy"
+  },
+  "provenance_requirements": [
+    "non-empty source_version identifying provider release or downloader/exporter release",
+    "license_reference persisted in the dataset manifest",
+    "provider/source record, acquisition timestamp, exact requested range, instrument, and quote convention",
+    "source authenticity remains an operator/provider evidence question; SHA-256 proves bytes only"
+  ],
+  "quality_requirements": {
+    "active_session_zero_volume": 0,
+    "crossed_quotes": 0,
+    "duplicate_timestamps": 0,
+    "invalid_ticks": 0,
+    "max_unexpected_gaps": 0,
+    "max_unknown_gaps": 0,
+    "non_monotonic_timestamps": 0,
+    "nonfinite_prices": 0,
+    "nonpositive_prices": 0,
+    "source_artifact_verification": "raw byte hash, normalized content hash, quality report hash, and manifest identity must all verify",
+    "volume_anomalies": 0
+  },
+  "requirements_content_hash": "bc3fb14897c3b5268c70c4a5ed6e6680e26d05134adbe7e7dfeade7aa85cc5d7",
+  "schema_version": "apex-m5-replacement-admission-requirements.v1",
+  "scope": {
+    "adjustment_policy": "raw; no adjustment or repair",
+    "calendar_id": "dukascopy-forex-utc-session-v1",
+    "instrument": "EUR/USD",
+    "raw_quote_requirement": "bid and ask prices and volumes; no bid-only bar artifact",
+    "raw_schema": [
+      "timestamp",
+      "askPrice",
+      "bidPrice",
+      "askVolume",
+      "bidVolume"
+    ],
+    "source_mode": "tick",
+    "timeframe": "15m",
+    "timestamp": "integer Unix epoch milliseconds",
+    "timestamp_semantics": "UTC bar_start after M15 floor aggregation"
+  },
+  "storage_layout": {
+    "manifest_root": "<DATA_ROOT>/manifests",
+    "normalized_root": "<DATA_ROOT>/normalized",
+    "qualification_root": "<OUTPUT_ROOT>/qualifications",
+    "raw_artifact_layout": "<DATA_ROOT>/raw/dukascopy/<RAW_SHA256>/<ORIGINAL_FILENAME>",
+    "raw_root": "<DATA_ROOT>/raw"
+  },
+  "verdict": "BLOCKED"
+}

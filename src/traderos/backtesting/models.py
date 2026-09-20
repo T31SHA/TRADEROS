@@ -324,17 +324,29 @@ class CostConfig(BaseModel):
 
 
 class SpreadConfig(BaseModel):
-    """Fallback absolute spread used when a bar has no bid/ask quote."""
+    """Explicit spread transformation used by the execution simulator.
+
+    ``observed_multiplier`` widens or narrows observed bid/ask around their
+    midpoint for a simulation scenario.  It never modifies source bars.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     fallback_absolute: Decimal = Decimal("0")
+    observed_multiplier: Decimal = Decimal("1")
 
     @field_validator("fallback_absolute")
     @classmethod
     def nonnegative(cls, value: Decimal) -> Decimal:
         if not value.is_finite() or value < 0:
-            raise ValueError("spread must be finite and non-negative")
+            raise ValueError("spread values must be finite and non-negative")
+        return value
+
+    @field_validator("observed_multiplier")
+    @classmethod
+    def nonnegative_multiplier(cls, value: Decimal) -> Decimal:
+        if not value.is_finite() or value < 0:
+            raise ValueError("observed_multiplier must be finite and non-negative")
         return value
 
 
@@ -453,6 +465,7 @@ class StrategyContext:
     equity: Decimal
     positions: tuple[PositionSnapshot, ...]
     feature_observations: tuple[FeatureObservation, ...] = ()
+    pending_orders: tuple[Order, ...] = ()
 
     def __post_init__(self) -> None:
         require_utc(self.event_timestamp)

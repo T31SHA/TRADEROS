@@ -42,6 +42,7 @@ from traderos.research.promotion import (
     PromotionPolicy,
     evaluate_promotion,
 )
+from traderos.research.registry import ExperimentRegistry
 from traderos.research.validation import ValidationFold
 
 
@@ -188,16 +189,22 @@ class ResearchValidationEngine:
         spec: ExperimentSpec,
         config: BacktestConfig,
         bars: Sequence[MarketBar],
+        dataset_bars: Sequence[MarketBar] | None = None,
         strategy: Strategy,
         features: Iterable[FeatureObservation] = (),
+        oos_registry: ExperimentRegistry | None = None,
+        oos_accessed_at: datetime | None = None,
     ) -> BacktestResult:
         return execute_backtest(
             plan=plan,
             spec=spec,
             config=config,
             bars=bars,
+            dataset_bars=dataset_bars,
             strategy=strategy,
             features=features,
+            oos_registry=oos_registry,
+            oos_accessed_at=oos_accessed_at,
         )
 
     def run_walk_forward(
@@ -206,6 +213,24 @@ class ResearchValidationEngine:
         """Aggregate already executed chronological folds; selection stays external."""
         if len(folds) != len(results):
             raise ResearchError("each walk-forward fold requires exactly one Phase 3 result")
+        fold_indices = tuple(fold.fold_index for fold in folds)
+        if len(set(fold_indices)) != len(fold_indices) or fold_indices != tuple(
+            sorted(fold_indices)
+        ):
+            raise ResearchError("walk-forward folds must be unique and chronological")
+        test_periods = tuple((fold.test.start, fold.test.end) for fold in folds)
+        if any(
+            left_end > right_start
+            for (_, left_end), (right_start, _) in zip(
+                test_periods, test_periods[1:], strict=False
+            )
+        ):
+            raise ResearchError(
+                "walk-forward test periods must be chronological and non-overlapping"
+            )
+        for fold, result in zip(folds, results, strict=True):
+            if result.config.start != fold.test.start or result.config.end != fold.test.end:
+                raise ResearchError("walk-forward result period differs from its fold")
         values = tuple(item.metrics.total_return for item in results)
         if any(value is None for value in values):
             raise ResearchError("walk-forward results contain unavailable total returns")
@@ -244,6 +269,10 @@ class ResearchValidationEngine:
         warnings: Sequence[str] = (),
         additional: Mapping[str, Mapping[str, object]] | None = None,
     ) -> EvidencePackage:
+        if result.experiment_id != spec.backtest_experiment_id:
+            raise ResearchError("evidence result identity differs from experiment lineage")
+        if result.config.experiment_id != spec.backtest_experiment_id:
+            raise ResearchError("evidence result configuration differs from experiment lineage")
         extras = additional or {}
         metrics = asdict(result.metrics)
         cost = {

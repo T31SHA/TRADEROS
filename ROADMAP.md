@@ -68,9 +68,11 @@ or network adapter is implemented.
 Immutable dataset/experiment/result lineage, fail-closed qualification,
 candidate/family lineage, chronological train/validation/test controls,
 locked-OOS protection, cost stress, deterministic Monte Carlo/FDR helpers, and
-machine-readable evidence/paper-only promotion review are implemented. No versioned
-historical market dataset is present in the repository, so the four baseline
-strategies have not been empirically evaluated and are INVALID / not evaluable;
+machine-readable evidence/paper-only promotion review are implemented. Local
+historical artifacts exist, but none is a versioned, empirically eligible
+dataset: the recorded qualification is rejected and rights/source identity are
+incomplete. The four baseline strategies have not been empirically evaluated
+and are INVALID / not evaluable;
 this is not a profitability claim or a strategy kill decision. See
 `docs/RESEARCH_ENGINE.md` and `docs/RESEARCH_VALIDATION.md`.
 

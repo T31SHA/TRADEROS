@@ -132,6 +132,8 @@ class DukascopyQuoteRecord:
             ingestion_timestamp=ingestion_timestamp,
             bid=self.bid_close,
             ask=self.ask_close,
+            # The source bid/ask fields are bar-close observations.
+            quote_timestamp=self.timestamp + config.timeframe.duration,
         )
 
 

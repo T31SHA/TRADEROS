@@ -74,13 +74,21 @@ def commission_amount(quantity: Decimal, price: Decimal, config: CostConfig) -> 
 
 @dataclass(frozen=True)
 class QuoteOrFixedSpreadModel:
-    """Use bar bid/ask when present, otherwise a configured absolute spread."""
+    """Use only quotes available at the simulated event, else fixed spread.
+
+    Observed quotes may be transformed for a stress scenario, but source bars
+    are never modified.  The simulator supplies a quote-safe bar before this
+    model is called.
+    """
 
     fallback_absolute: Decimal = Decimal("0")
+    observed_multiplier: Decimal = Decimal("1")
 
     def executable_price(self, bar: MarketBar, side: OrderSide, reference: Decimal) -> Decimal:
         if bar.bid is not None and bar.ask is not None:
-            return bar.ask if side is OrderSide.BUY else bar.bid
+            midpoint = (bar.bid + bar.ask) / Decimal("2")
+            half_spread = (bar.ask - bar.bid) / Decimal("2") * self.observed_multiplier
+            return midpoint + half_spread if side is OrderSide.BUY else midpoint - half_spread
         half = self.fallback_absolute / Decimal("2")
         return reference + half if side is OrderSide.BUY else reference - half
 
@@ -168,7 +176,16 @@ class ExecutionSimulator:
         for order in orders:
             if order.instrument != bar.instrument or not order.is_open:
                 continue
-            candidate = self._candidate(order, bar)
+            # A conditional order is evaluated only after the completed bar
+            # is observable.  Its fill timestamp is therefore the bar end;
+            # market orders remain bar-open executions.
+            order_fill_timestamp = (
+                fill_timestamp
+                if order.order_type is OrderType.MARKET
+                else bar.timestamp + bar.timeframe.duration
+            )
+            quote_safe_bar = self._quote_safe_bar(bar, order_fill_timestamp)
+            candidate = self._candidate(order, quote_safe_bar)
             if candidate is None:
                 if order.time_in_force.value == "ioc":
                     order.transition(OrderStatus.EXPIRED, reason="ioc_not_filled")
@@ -214,13 +231,32 @@ class ExecutionSimulator:
                 slippage=slippage,
                 commission=commission.amount,
                 commission_currency=commission.currency,
-                timestamp=fill_timestamp,
+                timestamp=(
+                    fill_timestamp
+                    if order.order_type is OrderType.MARKET
+                    else bar.timestamp + bar.timeframe.duration
+                ),
                 strategy_id=order.strategy_id,
                 strategy_version=order.strategy_version,
             )
             order.record_fill(quantity)
+            if order.time_in_force.value == "ioc" and order.is_open:
+                order.transition(OrderStatus.EXPIRED, reason="ioc_remainder_cancelled")
             fills.append(fill)
         return ExecutionReport(tuple(fills), tuple(rejected))
+
+    @staticmethod
+    def _quote_safe_bar(bar: MarketBar, fill_timestamp: datetime) -> MarketBar:
+        """Hide observations that were not available at this fill instant."""
+
+        if (
+            bar.quote_timestamp is not None
+            and bar.bid is not None
+            and bar.ask is not None
+            and bar.quote_timestamp <= fill_timestamp
+        ):
+            return bar
+        return bar.model_copy(update={"bid": None, "ask": None, "spread": None})
 
     def _candidate(self, order: Order, bar: MarketBar) -> tuple[Decimal, Decimal, Decimal] | None:
         if order.order_type is OrderType.MARKET:

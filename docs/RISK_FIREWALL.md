@@ -39,7 +39,9 @@ The portfolio snapshot is deliberately narrow, and is not a second portfolio
 engine. It contains the authoritative account identity, account-currency
 values, signed account-currency position notionals, UTC `risk_day`, daily P&L,
 high-water mark, active persisted locks, and reserved intent IDs. Approved
-decisions retain that account identity, so a downstream paper account cannot
+position marks carry their own freshness timestamp, and the snapshot carries a
+monotonic state revision. Approved decisions retain that account identity and
+revision, so a downstream paper account cannot
 consume an authorization evaluated for another account. `daily_pnl` is supplied
 as realized plus unrealized P&L and applicable costs since the beginning of
 `risk_day` at 00:00 UTC. The snapshot's `risk_day` must equal the UTC decision
@@ -56,7 +58,8 @@ date; market-session-specific reset rules are not invented here.
   markets, and percentage spread;
 - aligned active Phase 5 session/data state, unavailable regime dimensions, and
   stressed or unknown liquidity;
-- immutable portfolio snapshot freshness and finite/valid account values;
+- immutable portfolio snapshot and position-mark freshness, monotonic revision,
+  and finite/valid account values;
 - duplicate reserved intent, externally persisted risk locks, cash/margin,
   gross/net/long/short/instrument/asset-class exposure, leverage, concurrent
   positions, and pending intents;
@@ -77,12 +80,15 @@ includes every decision-relevant limit and switch. Limits are configured safety
 parameters, never fitted to P&L, returns, Sharpe, or future observations.
 
 For a new/increasing directional intent, an approval contains a bounded
-`RiskAuthorization`: maximum new notional, maximum loss at stop, and remaining
-portfolio capacity. It never contains an exact quantity. For an opposite
-direction against an existing instrument position, the result can only be a
-`REDUCTION_ONLY` authorization: maximum new notional is zero and maximum
-reduction is the existing exposure. This prevents a quantity-free signal from
-being silently interpreted as a reversal.
+`RiskAuthorization`: maximum new notional, leverage headroom, and remaining
+portfolio capacity. It never contains an exact quantity. The authorization also
+records `stop_risk_supported`; it is false in the current implementation, so
+`max_loss_at_stop` is metadata for a future declared stop-risk model, not a
+guaranteed maximum loss. For an opposite direction against an existing
+instrument position, the result can only be a `REDUCTION_ONLY` authorization:
+maximum new notional is zero and maximum reduction is the existing exposure.
+This prevents a quantity-free signal from being silently interpreted as a
+reversal.
 
 The future sizing/portfolio component must consume these constraints before it
 can produce a quantity-bearing Phase 3 order. This is an architectural contract

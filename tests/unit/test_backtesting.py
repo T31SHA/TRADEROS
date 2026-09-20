@@ -507,7 +507,13 @@ def test_order_partial_fill_and_terminal_states_are_explicit() -> None:
 
 
 def test_execution_uses_quotes_and_adverse_slippage_for_both_sides() -> None:
-    market_bar = bars(["100"])[0].model_copy(update={"bid": Decimal("99"), "ask": Decimal("101")})
+    market_bar = bars(["100"])[0].model_copy(
+        update={
+            "bid": Decimal("99"),
+            "ask": Decimal("101"),
+            "quote_timestamp": BASE,
+        }
+    )
     buy = order(market_bar, "buy", OrderSide.BUY, "1")
     sell = order(market_bar, "sell", OrderSide.SELL, "1")
     for item in (buy, sell):
@@ -518,6 +524,53 @@ def test_execution_uses_quotes_and_adverse_slippage_for_both_sides() -> None:
     assert [fill.price for fill in report.fills] == [Decimal("101.5"), Decimal("98.5")]
     assert report.fills[0].slippage == Decimal("0.5")
     assert report.fills[1].slippage == Decimal("0.5")
+
+
+def test_late_quote_mutation_cannot_change_bar_open_fill() -> None:
+    source = bars(["100"])[0]
+    late_quote = source.model_copy(
+        update={
+            "bid": Decimal("99"),
+            "ask": Decimal("101"),
+            "quote_timestamp": BASE + timedelta(hours=1),
+        }
+    )
+    changed_late_quote = late_quote.model_copy(
+        update={"bid": Decimal("1"), "ask": Decimal("200")}
+    )
+    first_order = order(late_quote, "late-1", OrderSide.BUY, "1")
+    second_order = order(changed_late_quote, "late-2", OrderSide.BUY, "1")
+    for item in (first_order, second_order):
+        item.transition(OrderStatus.SUBMITTED)
+        item.transition(OrderStatus.ACCEPTED)
+    simulator = ExecutionSimulator()
+    first = simulator.process((first_order,), late_quote, fill_timestamp=BASE)
+    second = simulator.process((second_order,), changed_late_quote, fill_timestamp=BASE)
+    assert first.fills[0].price == Decimal("100")
+    assert second.fills[0].price == Decimal("100")
+
+
+def test_conditional_fill_is_timestamped_when_completed_observation_is_available() -> None:
+    source = bars(["100"], highs=["110"], lows=["90"])[0].model_copy(
+        update={
+            "bid": Decimal("99"),
+            "ask": Decimal("101"),
+            "quote_timestamp": BASE + timedelta(hours=1),
+        }
+    )
+    item = order(
+        source,
+        "conditional-time",
+        OrderSide.BUY,
+        "1",
+        order_type=OrderType.STOP,
+        stop_price="105",
+    )
+    item.transition(OrderStatus.SUBMITTED)
+    item.transition(OrderStatus.ACCEPTED)
+    report = ExecutionSimulator().process((item,), source, fill_timestamp=BASE)
+    assert report.fills[0].timestamp == BASE + timedelta(hours=1)
+    assert report.fills[0].price == Decimal("101")
 
 
 def test_execution_supports_partial_liquidity_and_ioc_expiry() -> None:

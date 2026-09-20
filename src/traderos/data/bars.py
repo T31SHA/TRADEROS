@@ -33,6 +33,11 @@ class BarCandidate(BaseModel):
     source_timezone: str | None = None
     bid: Decimal | None = None
     ask: Decimal | None = None
+    # For aggregated quote bars these are observations, not automatically
+    # executable prices.  The provider must declare when the quote became
+    # available; downstream execution rejects observations available after a
+    # fill timestamp.
+    quote_timestamp: datetime | None = None
     spread: Decimal | None = None
     adjusted_close: Decimal | None = None
     trade_count: int | None = None
@@ -58,14 +63,17 @@ class MarketBar(BaseModel):
     ingestion_timestamp: datetime
     bid: Decimal | None = Field(default=None, gt=0)
     ask: Decimal | None = Field(default=None, gt=0)
+    quote_timestamp: datetime | None = None
     spread: Decimal | None = Field(default=None, ge=0)
     adjusted_close: Decimal | None = Field(default=None, gt=0)
     trade_count: int | None = Field(default=None, ge=0)
     vwap: Decimal | None = Field(default=None, gt=0)
 
-    @field_validator("timestamp", "ingestion_timestamp")
+    @field_validator("timestamp", "ingestion_timestamp", "quote_timestamp")
     @classmethod
-    def require_utc_timestamp(cls, value: datetime) -> datetime:
+    def require_utc_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         offset = value.utcoffset()
         if value.tzinfo is None or offset is None:
             raise ValueError("timestamps must be timezone-aware")
@@ -92,6 +100,8 @@ class MarketBar(BaseModel):
             raise ValueError("low must be at most open, close, and high")
         if self.bid is not None and self.ask is not None and self.bid > self.ask:
             raise ValueError("bid must not exceed ask")
+        if self.quote_timestamp is not None and self.quote_timestamp < self.timestamp:
+            raise ValueError("quote_timestamp cannot precede the bar start")
         return self
 
     @property

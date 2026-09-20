@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from traderos.backtesting.models import Order, OrderSide, OrderType, StrategyContext
@@ -111,6 +111,8 @@ class CanonicalHistoricalReplay:
         self._starting_cash = starting_cash
         self._instruments = dict(instruments or {})
         self._high_water_mark = starting_cash
+        self._risk_day: date | None = None
+        self._risk_day_starting_equity = starting_cash
         self._audit: list[ReplayAuditEvent] = []
 
     @staticmethod
@@ -139,15 +141,20 @@ class CanonicalHistoricalReplay:
         )
 
     def _risk_snapshot(self, context: StrategyContext) -> PortfolioRiskSnapshot:
+        self._advance_risk_day(context)
         self._high_water_mark = max(self._high_water_mark, context.equity)
-        positions = tuple(
-            RiskPositionSnapshot(
-                instrument=self._instruments.get(position.symbol, context.bar.instrument),
-                net_notional=position.market_value,
+        positions: list[RiskPositionSnapshot] = []
+        for position in context.positions:
+            if position.quantity == 0:
+                continue
+            instrument = self._instruments.get(position.symbol)
+            if instrument is None:
+                raise ReplayConfigurationError(
+                    f"missing explicit instrument identity for position {position.symbol}"
+                )
+            positions.append(
+                RiskPositionSnapshot(instrument=instrument, net_notional=position.market_value)
             )
-            for position in context.positions
-            if position.quantity != 0
-        )
         return PortfolioRiskSnapshot(
             timestamp=context.event_timestamp,
             account_id=self._account_id,
@@ -157,9 +164,10 @@ class CanonicalHistoricalReplay:
             cash=context.cash,
             margin_used=Decimal("0"),
             margin_available=context.equity,
-            daily_pnl=context.equity - self._starting_cash,
+            daily_pnl=context.equity - self._risk_day_starting_equity,
             high_water_mark=self._high_water_mark,
-            positions=positions,
+            positions=tuple(positions),
+            position_mark_timestamp=context.event_timestamp,
         )
 
     def _paper_account(
@@ -178,7 +186,7 @@ class CanonicalHistoricalReplay:
             risk_policy_id=self._firewall.policy_id,
             risk_policy_configuration_id=self._firewall.configuration_id,
             risk_day=snapshot.risk_day,
-            risk_day_starting_equity=self._starting_cash,
+            risk_day_starting_equity=self._risk_day_starting_equity,
             high_water_mark=snapshot.high_water_mark or self._starting_cash,
             realized_pnl=next(
                 (
@@ -213,6 +221,8 @@ class CanonicalHistoricalReplay:
 
     def on_event(self, context: StrategyContext) -> tuple[Order, ...]:
         """Perform canonical decisions at Phase 3's existing completed-bar time."""
+
+        self._advance_risk_day(context)
 
         regime = self._regimes.evaluate(
             RegimeContext(
@@ -309,10 +319,12 @@ class CanonicalHistoricalReplay:
                 ),
                 account=self._paper_account(context, snapshot),
                 position=self._paper_position(context),
-                reserved_risk=Decimal("0"),
-                reserved_cash=Decimal("0"),
+                reserved_risk=self._pending_reserved(context, "reserved_risk"),
+                reserved_cash=self._pending_reserved(context, "reserved_cash"),
                 config=self._sizing_config,
-                current_gross_exposure=context.equity - context.cash,
+                current_gross_exposure=sum(
+                    (abs(position.market_value) for position in context.positions), Decimal("0")
+                ),
             )
         except PaperTradingError as exc:
             self._audit.append(
@@ -340,6 +352,8 @@ class CanonicalHistoricalReplay:
                 "intent_id": intent.intent_id,
                 "risk_decision_id": decision.decision_id,
                 "sizing_configuration_id": sized.configuration_id,
+                "reserved_risk": str(sized.reserved_risk),
+                "reserved_cash": str(sized.reserved_cash),
             },
         )
         self._audit.append(
@@ -354,6 +368,24 @@ class CanonicalHistoricalReplay:
             )
         )
         return (order,)
+
+    @staticmethod
+    def _pending_reserved(context: StrategyContext, name: str) -> Decimal:
+        return sum(
+            (Decimal(order.metadata.get(name, "0")) for order in context.pending_orders),
+            Decimal("0"),
+        )
+
+    def _advance_risk_day(self, context: StrategyContext) -> None:
+        current_day = context.event_timestamp.date()
+        if self._risk_day is None:
+            self._risk_day = current_day
+            self._risk_day_starting_equity = context.equity
+        elif current_day < self._risk_day:
+            raise ReplayConfigurationError("historical replay events moved backward in UTC time")
+        elif current_day != self._risk_day:
+            self._risk_day = current_day
+            self._risk_day_starting_equity = context.equity
 
 
 __all__ = ["CanonicalHistoricalReplay", "ReplayAuditEvent", "ReplayConfigurationError"]

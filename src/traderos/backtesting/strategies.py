@@ -1,7 +1,7 @@
 """Minimal signal-only strategy contracts and deterministic baselines."""
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from typing import Protocol
@@ -25,6 +25,7 @@ class AlwaysFlatStrategy:
 
     strategy_id: str = "always_flat"
     strategy_version: str = "1"
+    parameters: Mapping[str, object] = field(default_factory=dict)
 
     def on_event(self, context: StrategyContext) -> tuple[Order, ...]:
         del context

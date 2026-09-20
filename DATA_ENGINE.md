@@ -82,7 +82,8 @@ and block admission. Aggregation uses bar-start UTC buckets and preserves both
 bid and ask OHLCV plus closing, mean, minimum, and maximum spread. Empty M15
 intervals are absent; no quote, volume, spread, OHLC, or missing bar is
 fabricated. The existing single-side `MarketBar` contract is populated only by
-an explicit bid/ask mapping.
+an explicit bid/ask mapping. Aggregated closing quotes carry their actual
+`quote_timestamp`; execution must not use them for a prior bar-opening fill.
 
 The existing `traderos.data.dukascopy` bar importer remains available for
 immutable v1/v2 artifacts and focused compatibility tests. Those aggregated

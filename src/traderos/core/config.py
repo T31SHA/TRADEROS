@@ -41,6 +41,20 @@ class Settings(BaseSettings):
     market_data_provider: str = Field(default="local", min_length=1)
     data_max_retries: int = Field(default=3, ge=0, le=10)
     data_retry_backoff_seconds: float = Field(default=0.0, ge=0.0, le=300.0)
+    kill_switch_active: bool = False
+    worker_workload_id: str = Field(default="default", min_length=1)
+    worker_account_id: str | None = None
+    worker_instrument: str | None = None
+    worker_timeframe: str | None = None
+    worker_data_source: str = Field(default="local", min_length=1)
+    worker_dataset_version: str | None = None
+    worker_dataset_id: str | None = None
+    worker_dataset_qualification_id: str | None = None
+    worker_dataset_qualification_root: str | None = None
+    worker_strategy_versions: str = ""
+    worker_cycle_interval_seconds: float = Field(default=60.0, gt=0.0, le=86400.0)
+    worker_lease_seconds: float = Field(default=120.0, gt=0.0, le=86400.0)
+    worker_data_max_age_seconds: float = Field(default=3600.0, gt=0.0, le=604800.0)
     database_url: str = Field(
         default="postgresql+psycopg://traderos:change-me@localhost:5432/traderos",
         min_length=1,

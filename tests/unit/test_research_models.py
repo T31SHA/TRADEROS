@@ -122,7 +122,7 @@ def _spec(
         period=period or TemporalRange(BASE, BASE + timedelta(hours=2)),
         strategy_id="always_flat",
         strategy_version="1",
-        parameters={"z": 2, "a": 1},
+        parameters={},
         feature_versions=(),
         regime_configuration_id=None,
         fusion_configuration_id=None,
@@ -302,8 +302,12 @@ def test_experiment_identity_is_mapping_order_invariant_and_cost_stress_never_mu
     None
 ):
     plan = _plan()
-    first = _spec(plan)
-    second = ExperimentSpec.from_parameters(**{**first.__dict__, "parameters": {"a": 1, "z": 2}})
+    first = ExperimentSpec.from_parameters(
+        **{**_spec(plan).__dict__, "parameters": {"a": 1, "z": 2}}
+    )
+    second = ExperimentSpec.from_parameters(
+        **{**first.__dict__, "parameters": {"z": 2, "a": 1}}
+    )
     base = _config()
     stressed = CostScenario("cost-2x", Decimal("2")).apply(base)
 
@@ -312,6 +316,7 @@ def test_experiment_identity_is_mapping_order_invariant_and_cost_stress_never_mu
     assert base.commission.per_unit == Decimal("0.1")
     assert stressed.commission.per_unit == Decimal("0.2")
     assert stressed.spread.fallback_absolute == Decimal("0.04")
+    assert stressed.spread.observed_multiplier == Decimal("2")
     assert stressed.slippage.absolute == Decimal("0.06")
 
 
@@ -469,10 +474,22 @@ def test_execute_backtest_requires_frozen_lineage_before_reusing_phase3_engine()
         spec=spec,
         config=config,
         bars=_bars(2),
+        dataset_bars=_bars(),
         strategy=AlwaysFlatStrategy(),
     )
     assert result.experiment_id == config.experiment_id
     assert result.metrics.trade_count == 0
+    tampered_parent = _bars()
+    tampered_parent[-1] = tampered_parent[-1].model_copy(update={"close": Decimal("999")})
+    with pytest.raises(ResearchError, match="parent dataset content"):
+        execute_backtest(
+            plan=plan,
+            spec=spec,
+            config=config,
+            bars=_bars(2),
+            dataset_bars=tampered_parent,
+            strategy=AlwaysFlatStrategy(),
+        )
 
     wrong_spec = _spec(plan, backtest_experiment_id="not-the-config")
     with pytest.raises(ResearchError, match="configuration identity"):
@@ -481,6 +498,7 @@ def test_execute_backtest_requires_frozen_lineage_before_reusing_phase3_engine()
             spec=wrong_spec,
             config=config,
             bars=_bars(2),
+            dataset_bars=_bars(),
             strategy=AlwaysFlatStrategy(),
         )
 
@@ -496,6 +514,7 @@ def test_execute_backtest_requires_frozen_lineage_before_reusing_phase3_engine()
                 spec=bad_spec,
                 config=bad_config,
                 bars=_bars(2),
+                dataset_bars=_bars(),
                 strategy=AlwaysFlatStrategy(),
             )
     with pytest.raises(ResearchError, match="strategy object"):
@@ -504,5 +523,19 @@ def test_execute_backtest_requires_frozen_lineage_before_reusing_phase3_engine()
             spec=spec,
             config=config,
             bars=_bars(2),
+            dataset_bars=_bars(),
             strategy=AlwaysFlatStrategy(strategy_id="other"),
+        )
+
+    mismatched_parameters = ExperimentSpec.from_parameters(
+        **{**spec.__dict__, "parameters": {"unexpected": 1}}
+    )
+    with pytest.raises(ResearchError, match="strategy parameters"):
+        execute_backtest(
+            plan=plan,
+            spec=mismatched_parameters,
+            config=config,
+            bars=_bars(2),
+            dataset_bars=_bars(),
+            strategy=AlwaysFlatStrategy(),
         )

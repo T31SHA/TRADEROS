@@ -1678,6 +1678,7 @@ class TickDatasetManifest:
     canonical_schema_version: str
     created_at: datetime
     artifact_metadata: tuple[TickRawArtifactMetadata, ...]
+    license_reference: str | None = None
 
     def canonical(self) -> dict[str, object]:
         return {
@@ -1705,6 +1706,7 @@ class TickDatasetManifest:
             "canonical_schema_version": self.canonical_schema_version,
             "created_at": self.created_at.isoformat(),
             "artifact_metadata": [item.canonical() for item in self.artifact_metadata],
+            "license_reference": self.license_reference,
         }
 
 
@@ -1907,6 +1909,7 @@ def admit_dukascopy_ticks(
     created_at: datetime,
     aggregation_policy: TickAggregationPolicy | None = None,
     deterministic_test_fixture: bool = False,
+    license_reference: str | None = None,
 ) -> TickDatasetAdmission:
     """Preserve no bytes and perform no acquisition; admit local tick artifacts."""
 
@@ -1925,6 +1928,8 @@ def admit_dukascopy_ticks(
         item.source_version != config.source_version for item in artifacts
     ):
         raise ValueError("tick artifact source version does not match import configuration")
+    if license_reference is not None and not license_reference.strip():
+        raise ValueError("license reference must not be blank")
 
     aggregation = aggregation_policy or TickAggregationPolicy()
     aggregator = TickAggregator(policy=aggregation)
@@ -1988,6 +1993,7 @@ def admit_dukascopy_ticks(
         "quote_configuration": aggregation.quote_configuration,
         "ingestion_version": TICK_INGESTION_VERSION,
         "canonical_schema_version": TICK_CANONICAL_SCHEMA_VERSION,
+        "license_reference": license_reference,
     }
     dataset_id = _hash_json(material)
     normalized_path = normalized_dir / f"{dataset_id}.jsonl"
@@ -2023,6 +2029,7 @@ def admit_dukascopy_ticks(
         canonical_schema_version=TICK_CANONICAL_SCHEMA_VERSION,
         created_at=created_at,
         artifact_metadata=artifacts,
+        license_reference=license_reference,
     )
     manifest_path = manifest_dir / f"{dataset_id}.json"
     quality_report_path = manifest_dir / f"{dataset_id}.quality.json"

@@ -24,6 +24,9 @@ dev = [
     "ruff>=0.6,<1",
 ]
 
+[project.scripts]
+traderos-worker = "traderos.worker.worker:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

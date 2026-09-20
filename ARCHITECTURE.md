@@ -227,9 +227,9 @@ does not create an alternate execution/accounting path. Locked OOS is never a
 selection scope, and contamination is explicit in `ExperimentResult`. Moving
 block bootstrap and conservative multiple-testing adjustment helpers support
 review but never automatically promote a candidate. Research has no dependency
-on paper state, brokers, credentials, networks, or live trading. The current
-repository contains no versioned historical dataset, so Phase 9 includes no
-empirical performance or survival claim.
+on paper state, brokers, credentials, networks, or live trading. Local
+historical artifacts exist, but no versioned artifact is empirically eligible;
+Phase 9 therefore includes no empirical performance or survival claim.
 
 Phase 9 also supplies fail-closed data qualification, immutable
 hypothesis/candidate/family lineage, chronological train/validation/test folds
@@ -253,7 +253,8 @@ manifest are immutable. Empty intervals are never synthesized. Only a
 non-fixture dataset with complete explicit lineage and an accepted versioned
 policy is eligible for research. The prior aggregated v1/v2 artifacts remain
 available for compatibility but are not canonical. The current repository
-includes the tick gate but no empirical artifact.
+includes blocked local tick artifacts and the tick gate, but no empirically
+eligible artifact.
 
 The historical canonical path is now a thin Phase 3 strategy adapter:
 `Phase 2 features → Phase 5 regime → Phase 4 strategies → Phase 6 fusion →

@@ -1,0 +1,85 @@
+{
+  "evidence": [
+    {
+      "fact": "The preserved raw file exists and its bytes match the manifest SHA-256 and byte size.",
+      "field": "raw_byte_identity",
+      "references": [
+        "data/raw/dukascopy/ad734960c1ea96fdf4b0055cdc74bde208f26c0e1ec1106a042ac22b90cf20b6/eurusd-tick-2024-01-02-2024-02-02.csv",
+        "data/raw/dukascopy/ad734960c1ea96fdf4b0055cdc74bde208f26c0e1ec1106a042ac22b90cf20b6/eurusd-tick-2024-01-02-2024-02-02.csv.metadata.json"
+      ],
+      "status": "LOCALLY_VERIFIED"
+    },
+    {
+      "fact": "The local metadata labels the source 'dukascopy' and symbol 'EURUSD'.",
+      "field": "provider_source_label",
+      "limitation": "A local label and hash do not establish provider authenticity.",
+      "references": [
+        "data/raw/dukascopy/ad734960c1ea96fdf4b0055cdc74bde208f26c0e1ec1106a042ac22b90cf20b6/eurusd-tick-2024-01-02-2024-02-02.csv.metadata.json"
+      ],
+      "status": "LOCALLY_RECORDED_NOT_AUTHENTICATED"
+    },
+    {
+      "fact": "The existing tick importer declares EUR/USD, bid+ask ticks, UTC epoch-millisecond timestamps, and bid_ask_close_spread.",
+      "field": "instrument_and_quote_convention",
+      "references": [
+        "src/traderos/data/ticks.py",
+        "src/traderos/data/empirical.py",
+        "data/normalized/f49cd41e3c0c431a8c9b8812827197fffde81446443c8f8f24fc573a03f7b3f4.jsonl"
+      ],
+      "status": "LOCALLY_VERIFIED_FOR_IMPORT_CONFIGURATION"
+    },
+    {
+      "fact": "2026-09-18T12:59:13+00:00",
+      "field": "acquisition_timestamp",
+      "limitation": "No signed provider receipt or acquisition log was found in configured locations.",
+      "references": [
+        "data/raw/dukascopy/ad734960c1ea96fdf4b0055cdc74bde208f26c0e1ec1106a042ac22b90cf20b6/eurusd-tick-2024-01-02-2024-02-02.csv.metadata.json"
+      ],
+      "status": "LOCALLY_RECORDED_NOT_AUTHENTICATED"
+    },
+    {
+      "fact": null,
+      "field": "source_version_or_downloader_release",
+      "references": [
+        "data/raw/dukascopy/ad734960c1ea96fdf4b0055cdc74bde208f26c0e1ec1106a042ac22b90cf20b6/eurusd-tick-2024-01-02-2024-02-02.csv.metadata.json"
+      ],
+      "status": "MISSING"
+    },
+    {
+      "fact": null,
+      "field": "license_or_terms_reference",
+      "references": [
+        "data/manifests/f49cd41e3c0c431a8c9b8812827197fffde81446443c8f8f24fc573a03f7b3f4.json"
+      ],
+      "status": "MISSING"
+    },
+    {
+      "fact": "The repository importer accepts a caller-supplied local Dukascopy-node-compatible CSV and performs no download.",
+      "field": "acquisition_mechanism",
+      "limitation": "The actual acquisition command, downloader release, and provider response are not present.",
+      "references": [
+        "scripts/admit_real_dukascopy_ticks.py",
+        "src/traderos/data/ticks.py"
+      ],
+      "status": "PARTIALLY_DOCUMENTED"
+    }
+  ],
+  "evidence_content_hash": "60d4ea6f97131dc61e071584da20769b2d9b43b51adcc031e3a592412ff17826",
+  "operator_inputs_required": [
+    "Official provider/export endpoint or source record for the exact artifact.",
+    "Exact downloader/exporter name and immutable release/version, not only a generic source label.",
+    "UTC acquisition timestamp and acquisition command or provider receipt.",
+    "Provider terms/license reference plus evidence that internal quantitative research use is permitted.",
+    "Provider-confirmed instrument symbol, UTC timestamp convention, bid/ask quote semantics, and requested range.",
+    "A replacement raw artifact with no unresolved open-session gaps and complete bid/ask observations."
+  ],
+  "prior_blocked_evidence": {
+    "protocol": "research/results/apex_m5/protocols/apex-m5-1a4560328c3cea8ebab4db67.json",
+    "qualification": "research/results/apex_m5/qualifications/3a631bd1808394e3e794be0974e4219b5780e1e54de3ab40abe4eef7b4a41425.json",
+    "reproducibility": "research/results/apex_m5/reproducibility.json",
+    "result": "research/results/apex_m5/result.json"
+  },
+  "schema_version": "apex-m5-source-license-evidence.v1",
+  "scope": "configured repository data, manifests, source importers, scripts, and blocked Milestone 5 records",
+  "selected_dataset_id": "f49cd41e3c0c431a8c9b8812827197fffde81446443c8f8f24fc573a03f7b3f4"
+}

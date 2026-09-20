@@ -334,6 +334,35 @@ def test_store_read_paths_and_transition_guards_are_database_authoritative(
             ),
             NOW,
         )
+
+    for changed in (
+        replace(
+            order,
+            status=PaperOrderStatus.CANCEL_REQUESTED,
+            authorization_action=RiskAction.REDUCTION_ONLY,
+        ),
+        replace(
+            order,
+            status=PaperOrderStatus.CANCEL_REQUESTED,
+            risk_policy_id="tampered-policy",
+        ),
+        replace(
+            order,
+            status=PaperOrderStatus.CANCEL_REQUESTED,
+            sizing_configuration_id="tampered-sizing",
+        ),
+        replace(
+            order,
+            status=PaperOrderStatus.CANCEL_REQUESTED,
+            idempotency_key="tampered-idempotency",
+        ),
+    ):
+        with (
+            engine.store.engine.begin() as connection,
+            pytest.raises(PaperTradingError, match="immutable"),
+        ):
+            engine.store.update_order(connection, changed, NOW)
+
     with (
         engine.store.engine.begin() as connection,
         pytest.raises(PaperTradingError, match="newly filled"),
@@ -356,9 +385,78 @@ def test_store_read_paths_and_transition_guards_are_database_authoritative(
     assert events[0]["event_type"] == "account_created"
 
 
+def test_reconciliation_rejects_open_order_without_matching_active_reservation(
+    engine: PaperTradingEngine,
+) -> None:
+    order = engine.submit(
+        account_id="engine-account",
+        idempotency_key="reconcile-reservation",
+        risk_decision=_decision("reconcile-reservation"),
+        quote=_quote(),
+        timestamp=NOW,
+    )
+    with engine.store.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE paper_reservations SET active = 0, released_at = :released "
+                "WHERE order_id = :order_id"
+            ),
+            {"released": NOW + timedelta(seconds=1), "order_id": order.order_id},
+        )
+    with pytest.raises(PaperTradingError, match="active reservation ledger"):
+        engine.reconcile("engine-account")
+
+
+def test_reconciliation_rejects_reservation_authorization_mismatch(
+    engine: PaperTradingEngine,
+) -> None:
+    order = engine.submit(
+        account_id="engine-account",
+        idempotency_key="reconcile-authorization",
+        risk_decision=_decision("reconcile-authorization"),
+        quote=_quote(),
+        timestamp=NOW,
+    )
+    with engine.store.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE paper_reservations SET intent_id = :intent_id "
+                "WHERE order_id = :order_id"
+            ),
+            {"intent_id": "tampered-intent", "order_id": order.order_id},
+        )
+
+    with pytest.raises(PaperTradingError, match="reservation authorization"):
+        engine.reconcile("engine-account")
+
+
+def test_reconciliation_rejects_tampered_risk_snapshot_projection(
+    engine: PaperTradingEngine,
+) -> None:
+    snapshot = engine.risk_snapshot("engine-account")
+    with engine.store.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE paper_risk_snapshots SET cash = :cash "
+                "WHERE snapshot_id = :snapshot_id"
+            ),
+            {"cash": "999", "snapshot_id": snapshot.snapshot_id},
+        )
+
+    with pytest.raises(PaperTradingError, match="risk snapshot differs"):
+        engine.reconcile("engine-account")
+
+
 def test_risk_day_and_loss_locks_are_persisted_from_accounting_state(
     engine: PaperTradingEngine,
 ) -> None:
+    pending = engine.submit(
+        account_id="engine-account",
+        idempotency_key="pending-before-loss-lock",
+        risk_decision=_decision("pending-before-loss-lock"),
+        quote=_quote(),
+        timestamp=NOW,
+    )
     account = engine.store.account("engine-account")
     with engine.store.engine.begin() as connection:
         rolled = engine._roll_risk_day_if_needed(
@@ -369,6 +467,11 @@ def test_risk_day_and_loss_locks_are_persisted_from_accounting_state(
     locks = engine.store.active_locks("engine-account")
     assert PaperRiskLockType.DAILY_LOSS_LOCK in locks
     assert PaperRiskLockType.DRAWDOWN_LOCK in locks
+    assert (
+        engine.store.order("engine-account", pending.order_id).status
+        is PaperOrderStatus.CANCELLED
+    )
+    assert engine.store.active_reservation_total_for_account("engine-account") == Decimal("0")
     with pytest.raises(PaperTradingError, match="risk lock"):
         engine.submit(
             account_id="engine-account",

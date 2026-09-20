@@ -205,6 +205,7 @@ class PaperAccount:
     fees: Decimal
     created_at: datetime
     updated_at: datetime
+    state_revision: int = 0
 
     def __post_init__(self) -> None:
         if not self.account_id.strip() or not self.account_currency.strip():
@@ -234,6 +235,8 @@ class PaperAccount:
             or self.high_water_mark <= 0
         ):
             raise PaperTradingError("paper account capital values are invalid")
+        if self.state_revision < 0:
+            raise PaperTradingError("paper account state revision is invalid")
         _utc(self.created_at)
         _utc(self.updated_at)
 
@@ -467,6 +470,7 @@ def quantity_for_authorization(
     reserved_cash: Decimal,
     config: PaperExecutionConfig,
     current_gross_exposure: Decimal = Decimal("0"),
+    reserved_reduction_quantity: Decimal = Decimal("0"),
 ) -> SizingResult:
     """Size only inside immutable Phase 7 bounds; this never mutates state."""
 
@@ -485,6 +489,8 @@ def quantity_for_authorization(
         raise PaperTradingError("reserved cash is invalid")
     if not current_gross_exposure.is_finite() or current_gross_exposure < 0:
         raise PaperTradingError("current gross exposure is invalid")
+    if not reserved_reduction_quantity.is_finite() or reserved_reduction_quantity < 0:
+        raise PaperTradingError("reserved reduction quantity is invalid")
     price = quote.ask if decision.direction.value == "long" else quote.bid
     _finite_positive(price, "sizing price")
     authorization = decision.authorization
@@ -500,8 +506,17 @@ def quantity_for_authorization(
         raw_quantity = available / price
         new_risk = available
     else:
-        current = Decimal("0") if position is None else abs(position.quantity)
-        raw_quantity = min(current, authorization.max_reduction_notional / price)
+        if position is None or position.quantity == 0:
+            raise PaperTradingError("reduction-only authorization has no reducible position")
+        # The direction is economic, not a caller label: a long position can
+        # only be reduced by a sell and a short position only by a buy.
+        reducing_long = position.quantity > 0 and decision.direction.value == "short"
+        reducing_short = position.quantity < 0 and decision.direction.value == "long"
+        if not (reducing_long or reducing_short):
+            raise PaperTradingError("reduction-only authorization would increase exposure")
+        current = abs(position.quantity)
+        available_quantity = current - reserved_reduction_quantity
+        raw_quantity = min(available_quantity, authorization.max_reduction_notional / price)
         new_risk = Decimal("0")
         if raw_quantity <= 0:
             raise PaperTradingError("reduction-only authorization has no reducible position")

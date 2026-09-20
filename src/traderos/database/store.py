@@ -62,6 +62,7 @@ def _bar_row(bar: MarketBar) -> dict[str, object]:
         "ingestion_timestamp": bar.ingestion_timestamp,
         "bid": bar.bid,
         "ask": bar.ask,
+        "quote_timestamp": bar.quote_timestamp,
         "spread": bar.spread,
         "adjusted_close": bar.adjusted_close,
         "trade_count": bar.trade_count,
@@ -320,8 +321,9 @@ class SqlAlchemyMarketDataStore:
         )
 
     def record_dataset(self, metadata_record: DatasetMetadata) -> None:
-        row = {
+        row: dict[str, object] = {
             "dataset_version": metadata_record.dataset_version,
+            "dataset_hash": metadata_record.dataset_hash,
             "provider": metadata_record.provider,
             "symbol": metadata_record.symbol,
             "timeframe": metadata_record.timeframe,
@@ -355,6 +357,7 @@ class SqlAlchemyMarketDataStore:
         return tuple(
             DatasetMetadata(
                 dataset_version=row["dataset_version"],
+                dataset_hash=row["dataset_hash"],
                 provider=row["provider"],
                 symbol=row["symbol"],
                 timeframe=row["timeframe"],
@@ -505,6 +508,13 @@ class SqlAlchemyMarketDataStore:
             else row["ingestion_timestamp"],
             bid=Decimal(row["bid"]) if row["bid"] is not None else None,
             ask=Decimal(row["ask"]) if row["ask"] is not None else None,
+            quote_timestamp=(
+                None
+                if row["quote_timestamp"] is None
+                else row["quote_timestamp"].replace(tzinfo=UTC)
+                if row["quote_timestamp"].tzinfo is None
+                else row["quote_timestamp"]
+            ),
             spread=Decimal(row["spread"]) if row["spread"] is not None else None,
             adjusted_close=Decimal(row["adjusted_close"])
             if row["adjusted_close"] is not None

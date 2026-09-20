@@ -370,6 +370,9 @@ class TickM15Bar:
             bid=self.bid.close,
             ask=self.ask.close,
             spread=self.closing_spread,
+            # These are closing observations.  They are not available at the
+            # bar opening and must not be used to price a bar-open fill.
+            quote_timestamp=self.timestamp + Timeframe.M15.duration,
         )
 
     def canonical(self) -> dict[str, object]:

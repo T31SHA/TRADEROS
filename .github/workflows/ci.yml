@@ -11,6 +11,23 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: traderos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d traderos"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      TRADEROS_POSTGRES_TEST_DSN: postgresql://postgres:postgres@localhost:5432/traderos
+      TRADEROS_POSTGRES_TEST_URL: postgresql+psycopg://postgres:postgres@localhost:5432/traderos
     strategy:
       matrix:
         python-version: ["3.12"]
@@ -26,5 +43,7 @@ jobs:
         run: ruff check .
       - name: Type check
         run: mypy src
+      - name: Apply disposable PostgreSQL migrations
+        run: scripts/apply_postgres_migrations.sh
       - name: Test
         run: pytest --cov=traderos --cov-report=term-missing

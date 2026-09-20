@@ -257,6 +257,13 @@ def test_multiple_testing_monte_carlo_and_promotion_are_deterministic_and_paper_
     assert evaluate_promotion(policy, evidence) is PromotionDecision.PROMOTION_REVIEW
     assert "live" not in {decision.value for decision in PromotionDecision}
 
+    with pytest.raises(ResearchError, match="adjusted p-value"):
+        PromotionEvidence(True, True, True, True, True, True, True, True, float("nan"), 5)
+    with pytest.raises(ResearchError, match="adjusted p-value"):
+        PromotionEvidence(True, True, True, True, True, True, True, True, 1.1, 5)
+    with pytest.raises(ResearchError, match="trade count"):
+        PromotionEvidence(True, True, True, True, True, True, True, True, None, -1)
+
     with pytest.raises(ResearchError, match="justification"):
         PromotionPolicy("paper-gate", "1", "", minimum_trade_count=5)
     assert (

@@ -1,0 +1,132 @@
+{
+  "schema_version": "apex-m5-acquisition-plan.v1",
+  "plan_id": "apex-m5-acquisition-20260919-eurusd",
+  "created_at": "2026-09-19T17:57:30Z",
+  "status": "BLOCKED_RIGHTS",
+  "purpose": "Acquire a new genuine EUR/USD bid/ask tick dataset for local, non-redistributed quantitative research; no strategy execution is authorized by this plan.",
+  "target": {
+    "instrument": "EUR/USD",
+    "provider_symbol": "EURUSD",
+    "timeframe": "15m derived from ticks",
+    "coverage_start": "2024-01-01T00:00:00Z",
+    "coverage_end_exclusive": "2026-01-01T00:00:00Z",
+    "date_selection_basis": "The two most recent complete calendar years preceding the current UTC year (2026), fixed before any performance inspection.",
+    "pilot": {
+      "coverage_start": "2024-01-01T00:00:00Z",
+      "coverage_end_exclusive": "2024-01-01T06:00:00Z",
+      "selection_basis": "The first fixed six-hour interval inside the declared target, not a return- or trade-selected interval.",
+      "strategy_execution": "PROHIBITED"
+    }
+  },
+  "provider": {
+    "name": "Dukascopy Bank SA datafeed",
+    "provider_revision": "NOT_SUPPLIED_BY_PROVIDER",
+    "provider_documentation": "https://www.dukascopy.com/wiki/en/development/data-export/",
+    "legacy_http_endpoint_template": "https://datafeed.dukascopy.com/datafeed/EURUSD/<YEAR>/<ZERO_BASED_MONTH>/<DAY>/<HOUR>h_ticks.bi5",
+    "documented_export_location": "s3://cfg-public-proper-wallaby/EURUSD/<YEAR>/<ZERO_BASED_MONTH>/<DAY>_ticks.bi5",
+    "endpoint_status": "DOCUMENTED_BUT_NOT_REQUESTED",
+    "endpoint_notes": [
+      "The official data-export documentation describes compressed .bi5 tick artifacts and a Requester Pays S3 workflow.",
+      "The legacy HTTP template is retained as a candidate only; it was not probed or downloaded.",
+      "A downloader release is not a provider data revision. These identities remain separate."
+    ]
+  },
+  "downloader": {
+    "name": "dukascopy-node",
+    "release": "1.50.0",
+    "release_status": "PLANNED_PIN_NOT_INSTALLED",
+    "documentation": "https://github.com/Leo4815162342/dukascopy-node/wiki/Downloading-tick-data",
+    "cli_documentation": "https://github.com/Leo4815162342/dukascopy-node/wiki/Downloading-data-with-CLI",
+    "invocation_shape": "npx dukascopy-node -i eurusd -from <YYYY-MM-DD> -to <YYYY-MM-DD> -t tick -f csv -dir <OUTPUT_DIR>",
+    "tooling_identity": "Public downloader package; not provider revision",
+    "installation_status": "NOT_INSTALLED",
+    "reason_not_installed": "Rights and zero-cost access gates failed before market-content acquisition."
+  },
+  "raw_format": {
+    "provider_native_candidate": "LZMA-compressed .bi5 tick records",
+    "repository_admission_format": [
+      "timestamp",
+      "askPrice",
+      "bidPrice",
+      "askVolume",
+      "bidVolume"
+    ],
+    "timestamp_semantics": "Integer Unix epoch milliseconds interpreted as UTC; M15 bars use UTC bar-start flooring.",
+    "price_semantics": "EUR/USD bid and ask prices; provider point scaling must be verified before conversion.",
+    "volume_semantics": "Separate ask and bid volumes; source units must be recorded and not inferred as traded volume.",
+    "quote_requirement": "Both bid and ask observations are required; bid-only bars are not admissible for this path.",
+    "conversion_lineage": "Preserve native provider bytes, hash them, then hash any versioned conversion separately before admission."
+  },
+  "terms_and_use": {
+    "intended_use": "Local, non-commercial, non-redistributed quantitative research only.",
+    "terms_reference": "https://www.dukascopy.com/swiss/sk/legal-pages/terms-of-use/",
+    "additional_terms_reference": "https://www.dukascopy.com/plugins/cont.php?branch=eu&ref_id=198910",
+    "xml_license_reference": "https://www.dukascopy.com/plugins/cont.php?ref_id=1273",
+    "review_timestamp": "2026-09-19T17:57:30Z",
+    "assessment": "UNRESOLVED",
+    "blockers": [
+      "The public data-export page documents a Requester Pays S3 path; using it may incur a charge, which is outside the zero-monetary-cost authorization.",
+      "The official Dukascopy Europe terms prohibit automated acquisition/database construction without prior express written consent. Applicability of that term to the exact public raw-tick endpoint is not resolved.",
+      "The official XML data agreement is a registration/approval license for XML data and does not establish permission for this raw bid/ask tick acquisition.",
+      "No provider grant expressly authorizing this exact automated raw-tick workflow was supplied."
+    ],
+    "operator_acceptance": "NOT_PERFORMED"
+  },
+  "request_policy": {
+    "max_concurrent_requests": 1,
+    "planned_pause_between_requests_seconds": 2,
+    "max_retries_per_segment": 3,
+    "retry_backoff_seconds": [
+      2,
+      4,
+      8
+    ],
+    "retryable_failures": [
+      "connection reset",
+      "timeout",
+      "HTTP 429",
+      "HTTP 5xx"
+    ],
+    "non_retryable_or_review_required": [
+      "HTTP 401",
+      "HTTP 403",
+      "terms or bot restriction response",
+      "HTML or non-market payload",
+      "zero-byte response",
+      "unresolved missing object"
+    ],
+    "credentials": "NONE"
+  },
+  "resource_limits": {
+    "monetary_cost": 0,
+    "max_downloaded_bytes": 5368709120,
+    "max_wall_time_minutes": 60,
+    "max_concurrent_downloads": 2,
+    "stop_behavior": "Preserve verified segments and emit BLOCKED_ACQUISITION_INCOMPLETE if a budget expires; never call a partial collection complete."
+  },
+  "completion_criteria": [
+    "Provider rights for this exact endpoint and local use are documented and applicable.",
+    "No charge is incurred, or the operator separately authorizes a cost; this plan itself authorizes zero cost only.",
+    "The complete fixed coverage is represented by successful per-segment records.",
+    "Every native artifact has byte size, SHA-256, endpoint, retrieval timestamp, HTTP/result status, and retry history.",
+    "Every conversion has an immutable converter identity and a hash relationship to native bytes.",
+    "The repository tick-admission path passes with zero unresolved quality blockers and a persisted license reference.",
+    "Only after those gates pass may a new dataset qualification and a new bound protocol be created."
+  ],
+  "source_identity": {
+    "base_commit": "a15d8f18e514764c19f9aff289b5698eb627ab6e",
+    "dirty_state": "dirty",
+    "snapshot_content_digest": "45a13848ac6fe5759100c941172cd94dd0e864c38761d5696e6a174b0869ca9d",
+    "python_version": "3.14.4",
+    "python_executable": "/home/sharahbill/TRADEROS/.venv/bin/python",
+    "source_snapshot_scope": "Current supported source snapshot excluding raw market data, caches, environment secrets, and research result data; includes current working-tree implementation and required untracked source files."
+  },
+  "prior_evidence": {
+    "blocked_result": "research/results/apex_m5/result.json",
+    "blocked_protocol": "research/results/apex_m5/protocols/apex-m5-1a4560328c3cea8ebab4db67.json",
+    "blocked_qualification": "research/results/apex_m5/qualifications/3a631bd1808394e3e794be0974e4219b5780e1e54de3ab40abe4eef7b4a41425.json",
+    "remediation_gap_inventory": "research/results/apex_m5_remediation/gap_inventory.json",
+    "remediation_source_license_evidence": "research/results/apex_m5_remediation/source_license_evidence.json"
+  },
+  "strategy_execution": "NOT_AUTHORIZED_AND_NOT_PERFORMED"
+}

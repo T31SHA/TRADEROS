@@ -149,13 +149,21 @@ class PortfolioRiskSnapshot:
     active_locks: frozenset[RiskLock] = frozenset()
     reserved_intent_ids: frozenset[str] = frozenset()
     pending_intent_count: int = 0
+    position_mark_timestamp: datetime | None = None
+    revision: int = 0
 
     def __post_init__(self) -> None:
         require_utc(self.timestamp)
+        if self.position_mark_timestamp is not None:
+            require_utc(self.position_mark_timestamp)
+            if self.position_mark_timestamp > self.timestamp:
+                raise ValueError("position mark cannot be future-dated")
         if not self.account_id.strip() or not self.account_currency.strip():
             raise ValueError("risk snapshot account identity and currency must not be blank")
         if self.pending_intent_count < 0:
             raise ValueError("pending intent count must be non-negative")
+        if self.revision < 0:
+            raise ValueError("risk snapshot revision must be non-negative")
         symbols = [item.instrument.canonical_symbol for item in self.positions]
         if len(set(symbols)) != len(symbols):
             raise ValueError("risk snapshot positions must be unique by instrument")
@@ -208,6 +216,7 @@ class RiskAuthorization:
     max_loss_at_stop: Decimal
     max_reduction_notional: Decimal
     require_pretrade_sizing: bool = True
+    stop_risk_supported: bool = False
 
     def __post_init__(self) -> None:
         for value in (
@@ -223,6 +232,10 @@ class RiskAuthorization:
             raise ValueError("new-risk authorization requires positive bounded limits")
         if self.action is RiskAction.REDUCTION_ONLY and self.max_new_notional != 0:
             raise ValueError("reduction-only authorization cannot permit new notional")
+        if type(self.require_pretrade_sizing) is not bool or type(
+            self.stop_risk_supported
+        ) is not bool:
+            raise ValueError("risk authorization switches must be boolean")
 
 
 @dataclass(frozen=True)
@@ -245,9 +258,12 @@ class RiskDecision:
     regime_state_id: str | None
     portfolio_snapshot_timestamp: datetime | None
     market_snapshot_timestamp: datetime | None
+    portfolio_snapshot_revision: int | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.decision_timestamp)
+        if self.portfolio_snapshot_revision is not None and self.portfolio_snapshot_revision < 0:
+            raise ValueError("risk decision portfolio revision must be non-negative")
         if not all(
             value.strip()
             for value in (
@@ -304,6 +320,7 @@ def deterministic_risk_decision_id(
         regime_state_id=context.regime_state.state_id if context.regime_state else None,
         portfolio_snapshot_timestamp=(context.portfolio.timestamp if context.portfolio else None),
         market_snapshot_timestamp=context.market.timestamp if context.market else None,
+        portfolio_snapshot_revision=(context.portfolio.revision if context.portfolio else None),
     )
 
 
@@ -331,6 +348,7 @@ def risk_decision_integrity_id(decision: RiskDecision) -> str:
         regime_state_id=decision.regime_state_id,
         portfolio_snapshot_timestamp=decision.portfolio_snapshot_timestamp,
         market_snapshot_timestamp=decision.market_snapshot_timestamp,
+        portfolio_snapshot_revision=decision.portfolio_snapshot_revision,
     )
 
 
@@ -351,6 +369,7 @@ def _risk_decision_id(
     regime_state_id: str | None,
     portfolio_snapshot_timestamp: datetime | None,
     market_snapshot_timestamp: datetime | None,
+    portfolio_snapshot_revision: int | None,
 ) -> str:
     """Hash every persisted authorization field that Phase 8 consumes."""
 
@@ -373,6 +392,7 @@ def _risk_decision_id(
         "market_snapshot_timestamp": (
             market_snapshot_timestamp.isoformat() if market_snapshot_timestamp else None
         ),
+        "portfolio_snapshot_revision": portfolio_snapshot_revision,
         "checks": [
             (
                 item.check_id,
@@ -391,6 +411,8 @@ def _risk_decision_id(
                 str(authorization.max_new_notional),
                 str(authorization.max_loss_at_stop),
                 str(authorization.max_reduction_notional),
+                authorization.require_pretrade_sizing,
+                authorization.stop_risk_supported,
             )
         ),
     }

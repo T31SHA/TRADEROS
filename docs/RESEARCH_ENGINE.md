@@ -103,9 +103,10 @@ not authorize a paper order. `PROMOTE_TO_LIVE` does not exist.
 
 ## Current limitations
 
-There is no production historical dataset or calibrated cost schedule in this
-repository, so Phase 9 makes no empirical profitability or deployability claim.
-A production-quality immutable historical dataset is still unavailable, so
+There is no production-quality empirically eligible historical dataset or
+calibrated cost schedule in this repository, so Phase 9 makes no empirical
+profitability or deployability claim. Local artifacts remain blocked by the
+qualification and source-rights gates, so
 architectural validation must not be confused with empirical strategy
 validation. Capacity, impact, historical
 universe, corporate-action, and calendar data sources are also not added here.
@@ -130,9 +131,13 @@ unknown gaps, and unexplained active-session zero-volume bars. No repairs,
 sorting, fill, interpolation, or manufactured quotes are permitted. The
 existing aggregated v1/v2 artifacts remain immutable but are not canonical.
 
-At this commit no actual EUR/USD tick artifact is supplied, so the empirical
-qualification state remains `BLOCKED — artifact not supplied`. The local test
-fixtures exercise the tick gate only and are not empirical datasets.
+Raw tick artifacts remain local, git-ignored inputs rather than versioned
+repository data. A configured local artifact may therefore be inventoried and
+verified, but it is empirical only after the full qualification and source
+identity gate passes. The first APEX Milestone 5 preflight is recorded in
+`research/results/apex_m5/` and remains `BLOCKED_DATA`; no strategy execution
+or profitability result was produced. Local test fixtures exercise the tick
+gate only and are not empirical datasets.
 
 ### Twelve Data OHLCV research source
 

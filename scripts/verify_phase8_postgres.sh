@@ -6,9 +6,9 @@ set -euo pipefail
 : "${TRADEROS_POSTGRES_TEST_URL:?set matching SQLAlchemy URL}"
 python_bin="${TRADEROS_PYTHON:-python}"
 
-psql "$TRADEROS_POSTGRES_TEST_DSN" -v ON_ERROR_STOP=1 -f migrations/001_market_data_foundation.sql
-psql "$TRADEROS_POSTGRES_TEST_DSN" -v ON_ERROR_STOP=1 -f migrations/002_paper_trading.sql
-psql "$TRADEROS_POSTGRES_TEST_DSN" -v ON_ERROR_STOP=1 -f migrations/003_paper_trading_hardening.sql
-psql "$TRADEROS_POSTGRES_TEST_DSN" -v ON_ERROR_STOP=1 -f migrations/004_paper_risk_snapshots.sql
+scripts/apply_postgres_migrations.sh
 TRADEROS_POSTGRES_TEST_URL="$TRADEROS_POSTGRES_TEST_URL" \
-  "$python_bin" -m pytest -q tests/integration/test_paper_trading_postgres.py
+  "$python_bin" -m pytest -q \
+    tests/integration/test_paper_trading_postgres.py \
+    tests/integration/research/test_strategy_governance_postgres.py \
+    tests/integration/test_worker_postgres.py

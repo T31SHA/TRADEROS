@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy.engine import Connection
@@ -114,6 +114,14 @@ class PaperTradingEngine:
             require_utc(expires_at)
             if expires_at <= timestamp:
                 raise PaperTradingError("expiration must follow submission")
+        if time_in_force is TimeInForce.DAY:
+            day_end = datetime.combine(
+                timestamp.date() + timedelta(days=1), datetime.min.time(), tzinfo=timestamp.tzinfo
+            )
+            if expires_at is None:
+                expires_at = day_end
+            elif expires_at > day_end:
+                raise PaperTradingError("DAY order expiration cannot exceed UTC day boundary")
         try:
             with self.store.engine.begin() as connection:
                 account = self.store.locked_account(connection, account_id)
@@ -127,10 +135,6 @@ class PaperTradingEngine:
                         )
                     return existing
                 self._validate_account_authorization(account, risk_decision)
-                self._validate_current_portfolio_snapshot(account, risk_decision)
-                position = self.store.locked_position(
-                    connection, account_id, risk_decision.instrument.canonical_symbol
-                )
                 if self.store.has_active_lock(connection, account_id) and (
                     risk_decision.authorization is None
                     or risk_decision.authorization.action is not RiskAction.REDUCTION_ONLY
@@ -138,6 +142,21 @@ class PaperTradingEngine:
                     raise PaperTradingError(
                         "active durable risk lock blocks risk-increasing paper order"
                     )
+                self._validate_current_portfolio_snapshot(account, risk_decision)
+                position = self.store.locked_position(
+                    connection, account_id, risk_decision.instrument.canonical_symbol
+                )
+                open_orders = self.store.locked_open_orders(
+                    connection, account_id, risk_decision.instrument.canonical_symbol
+                )
+                reserved_reduction_quantity = sum(
+                    (
+                        item.remaining_quantity
+                        for item in open_orders
+                        if item.authorization_action is RiskAction.REDUCTION_ONLY
+                    ),
+                    Decimal("0"),
+                )
                 sized = quantity_for_authorization(
                     decision=risk_decision,
                     quote=quote,
@@ -147,6 +166,7 @@ class PaperTradingEngine:
                     reserved_cash=self.store.active_reserved_cash_total(connection, account_id),
                     config=self.config,
                     current_gross_exposure=self._gross_exposure(connection, account_id),
+                    reserved_reduction_quantity=reserved_reduction_quantity,
                 )
                 side = OrderSide.BUY if risk_decision.direction.value == "long" else OrderSide.SELL
                 authorization = risk_decision.authorization
@@ -209,10 +229,33 @@ class PaperTradingEngine:
         try:
             with self.store.engine.begin() as connection:
                 account = self.store.locked_account(connection, account_id)
-                account = self._roll_risk_day_if_needed(connection, account, quote.timestamp)
-                for order in self.store.locked_open_orders(
+                current_position = self.store.locked_position(
                     connection, account_id, quote.instrument.canonical_symbol
-                ):
+                )
+                valuation_stale = quote.timestamp < account.updated_at or (
+                    current_position is not None and quote.timestamp <= current_position.updated_at
+                )
+                if not valuation_stale:
+                    account = self._roll_risk_day_if_needed(connection, account, quote.timestamp)
+                open_orders = self.store.locked_open_orders(
+                    connection, account_id, quote.instrument.canonical_symbol
+                )
+                for order in open_orders:
+                    if (
+                        self.store.has_active_lock(connection, account_id)
+                        and order.authorization_action is not RiskAction.REDUCTION_ONLY
+                    ):
+                        cancelled = replace(
+                            order,
+                            status=PaperOrderStatus.CANCELLED,
+                            rejection_reason="risk_lock_active",
+                            last_market_event_at=quote.timestamp,
+                        )
+                        self.store.update_order(connection, cancelled, quote.timestamp)
+                        self.store.release_reservation(connection, cancelled, quote.timestamp)
+                        continue
+                    if valuation_stale:
+                        continue
                     if quote.timestamp <= order.submitted_at or (
                         order.last_market_event_at is not None
                         and quote.timestamp <= order.last_market_event_at
@@ -225,7 +268,9 @@ class PaperTradingEngine:
                         continue
                     candidate = self._execution_price(order, quote)
                     if candidate is None:
-                        self.store.record_market_event(connection, order.order_id, quote.timestamp)
+                        self.store.record_market_event(
+                            connection, account_id, order.order_id, quote.timestamp
+                        )
                         if order.time_in_force is TimeInForce.IOC:
                             expired = replace(order, status=PaperOrderStatus.EXPIRED)
                             self.store.update_order(connection, expired, quote.timestamp)
@@ -233,6 +278,26 @@ class PaperTradingEngine:
                         continue
                     reference, price = candidate
                     quantity = order.remaining_quantity
+                    position = self.store.locked_position(
+                        connection, account_id, order.instrument.canonical_symbol
+                    )
+                    if order.authorization_action is RiskAction.REDUCTION_ONLY:
+                        if position is None or position.quantity == 0 or (
+                            (position.quantity > 0 and order.side is not OrderSide.SELL)
+                            or (position.quantity < 0 and order.side is not OrderSide.BUY)
+                        ):
+                            cancelled = replace(
+                                order,
+                                status=PaperOrderStatus.CANCELLED,
+                                rejection_reason="no_reducible_position_at_fill",
+                                last_market_event_at=quote.timestamp,
+                            )
+                            self.store.update_order(connection, cancelled, quote.timestamp)
+                            self.store.release_reservation(connection, cancelled, quote.timestamp)
+                            continue
+                        quantity = min(quantity, abs(position.quantity))
+                        if quantity <= 0:
+                            continue
                     if self.config.max_fill_quantity is not None:
                         quantity = min(quantity, self.config.max_fill_quantity)
                     commission = commission_amount(
@@ -256,10 +321,42 @@ class PaperTradingEngine:
                         commission=commission,
                         timestamp=quote.timestamp,
                     )
-                    position = self.store.locked_position(
-                        connection, account_id, order.instrument.canonical_symbol
-                    )
                     next_position, cash_delta, realized = self._apply_fill(position, fill)
+                    if order.authorization_action is RiskAction.NEW_OR_INCREASE:
+                        order_reserved_risk, _ = self.store.locked_active_reservation(
+                            connection, order.order_id
+                        )
+                        filled_notional = (
+                            order.filled_quantity
+                            * (order.average_fill_price or fill.price)
+                            + fill.quantity * fill.price
+                        )
+                        residual_order_risk = max(
+                            order_reserved_risk - filled_notional, Decimal("0")
+                        )
+                        other_reserved_risk = (
+                            self.store.active_reservation_total(connection, account_id)
+                            - order_reserved_risk
+                        )
+                        projected_gross = self._projected_gross_exposure(
+                            connection, account_id, next_position
+                        )
+                        if (
+                            projected_gross + other_reserved_risk + residual_order_risk
+                            > account.risk_capacity
+                        ):
+                            rejected = replace(
+                                order,
+                                status=(
+                                    PaperOrderStatus.REJECTED
+                                    if order.filled_quantity == 0
+                                    else PaperOrderStatus.EXPIRED
+                                ),
+                                rejection_reason="risk_bound_exceeded_at_fill",
+                            )
+                            self.store.update_order(connection, rejected, quote.timestamp)
+                            self.store.release_reservation(connection, rejected, quote.timestamp)
+                            continue
                     if account.cash + cash_delta < 0:
                         rejected = replace(
                             order,
@@ -285,6 +382,8 @@ class PaperTradingEngine:
                         if filled == order.quantity
                         else PaperOrderStatus.PARTIALLY_FILLED
                     )
+                    if order.time_in_force is TimeInForce.IOC and filled < order.quantity:
+                        new_status = PaperOrderStatus.EXPIRED
                     updated_order = replace(
                         order,
                         filled_quantity=filled,
@@ -313,7 +412,12 @@ class PaperTradingEngine:
                         timestamp=quote.timestamp,
                     )
                     self.store.update_order(connection, updated_order, quote.timestamp)
-                    if new_status is PaperOrderStatus.FILLED:
+                    if new_status in {
+                        PaperOrderStatus.FILLED,
+                        PaperOrderStatus.EXPIRED,
+                        PaperOrderStatus.CANCELLED,
+                        PaperOrderStatus.REJECTED,
+                    }:
                         self.store.release_reservation(connection, updated_order, quote.timestamp)
                     account = replace(
                         account,
@@ -325,6 +429,8 @@ class PaperTradingEngine:
                     )
                     self._apply_loss_locks(connection, account, equity, quote.timestamp)
                     fills.append(fill)
+                if valuation_stale:
+                    return tuple(fills)
                 account = self._mark_quote_and_refresh_account(
                     connection, account, quote, quote.timestamp
                 )
@@ -370,7 +476,9 @@ class PaperTradingEngine:
             raise PaperTradingError("risk lock reason must not be blank")
         with self.store.engine.begin() as connection:
             self.store.locked_account(connection, account_id)
-            self.store.activate_lock(connection, account_id, lock_type, reason, timestamp)
+            self._activate_lock_in_transaction(
+                connection, account_id, lock_type, reason, timestamp
+            )
             self.store.record_risk_snapshot(connection, account_id, timestamp)
 
     def recover(
@@ -432,6 +540,8 @@ class PaperTradingEngine:
             active_locks=locks,
             reserved_intent_ids=self.store.active_reservation_intent_ids(account_id),
             pending_intent_count=snapshot.pending_order_count,
+            position_mark_timestamp=snapshot.mark_timestamp,
+            revision=account.state_revision,
         )
 
     def reconcile(self, account_id: str) -> None:
@@ -441,6 +551,7 @@ class PaperTradingEngine:
         fills = self.store.fills(account_id)
         if any(fill.quantity <= 0 for fill in fills):
             raise PaperTradingError("non-positive persisted fill")
+        orders_by_id = {order.order_id: order for order in orders}
         for order in orders:
             if order.filled_quantity < 0 or order.filled_quantity > order.quantity:
                 raise PaperTradingError("persisted order quantity conservation failed")
@@ -451,6 +562,27 @@ class PaperTradingEngine:
                 raise PaperTradingError("order filled quantity differs from fill ledger")
             if order.status is PaperOrderStatus.FILLED and order.remaining_quantity != 0:
                 raise PaperTradingError("filled order retains quantity")
+        expected_open_orders = {order.order_id for order in orders if order.is_open}
+        active_reservation_orders = self.store.active_reservation_order_ids(account_id)
+        if active_reservation_orders != expected_open_orders:
+            raise PaperTradingError("active reservation ledger differs from open orders")
+        expected_reservation_bindings = tuple(
+            sorted(
+                (order.order_id, order.source_intent_id, order.risk_decision_id)
+                for order in orders
+                if order.is_open
+            )
+        )
+        if self.store.active_reservation_bindings(account_id) != expected_reservation_bindings:
+            raise PaperTradingError("reservation authorization differs from open orders")
+        for fill in fills:
+            fill_order = orders_by_id.get(fill.order_id)
+            if fill_order is None:
+                raise PaperTradingError("fill ledger references an unknown order")
+            if fill.instrument != fill_order.instrument or fill.side is not fill_order.side:
+                raise PaperTradingError("fill ledger differs from order authorization")
+            if fill.timestamp <= fill_order.submitted_at:
+                raise PaperTradingError("fill ledger contains a pre-submission fill")
         reservations = self.store.active_reservation_total_for_account(account_id)
         if account.reserved_risk != reservations:
             raise PaperTradingError("account reserved risk differs from reservation ledger")
@@ -486,8 +618,53 @@ class PaperTradingEngine:
             ):
                 raise PaperTradingError("position projection differs from fill ledger")
         latest = self.store.latest_risk_snapshot(account_id)
-        if latest.reserved_risk != account.reserved_risk:
-            raise PaperTradingError("risk snapshot differs from account reservation state")
+        expected_net = sum(
+            (item.quantity * item.market_price for item in positions), Decimal("0")
+        )
+        expected_equity = account.cash + expected_net
+        expected_gross = sum(
+            (abs(item.quantity * item.market_price) for item in positions), Decimal("0")
+        )
+        expected_long = sum(
+            (item.quantity * item.market_price for item in positions if item.quantity > 0),
+            Decimal("0"),
+        )
+        expected_short = sum(
+            (-item.quantity * item.market_price for item in positions if item.quantity < 0),
+            Decimal("0"),
+        )
+        expected_locks = tuple(
+            sorted(self.store.active_locks(account_id), key=lambda item: item.value)
+        )
+        expected_mark = min(
+            (item.updated_at for item in positions if item.quantity != 0),
+            default=None,
+        )
+        expected_pending = sum(order.is_open for order in orders)
+        if (
+            latest.timestamp != account.updated_at
+            or latest.cash != account.cash
+            or latest.equity != expected_equity
+            or latest.used_margin != Decimal("0")
+            or latest.available_margin != max(expected_equity, Decimal("0"))
+            or latest.gross_exposure != expected_gross
+            or latest.net_exposure != expected_net
+            or latest.long_exposure != expected_long
+            or latest.short_exposure != expected_short
+            or latest.realized_pnl != account.realized_pnl
+            or latest.unrealized_pnl
+            != sum((item.unrealized_pnl for item in positions), Decimal("0"))
+            or latest.fees != account.fees
+            or latest.daily_pnl != expected_equity - account.risk_day_starting_equity
+            or latest.high_water_mark != account.high_water_mark
+            or latest.drawdown != max(account.high_water_mark - expected_equity, Decimal("0"))
+            or latest.reserved_risk != account.reserved_risk
+            or latest.pending_order_count != expected_pending
+            or latest.active_locks != expected_locks
+            or latest.mark_timestamp != expected_mark
+            or latest.positions != tuple(positions)
+        ):
+            raise PaperTradingError("risk snapshot differs from authoritative paper state")
 
     def _validate_decision(
         self, decision: RiskDecision, quote: PaperQuote, timestamp: datetime, account_id: str
@@ -535,6 +712,11 @@ class PaperTradingEngine:
 
         if decision.portfolio_snapshot_timestamp != account.updated_at:
             raise PaperTradingError("risk decision portfolio snapshot is no longer current")
+        if (
+            decision.portfolio_snapshot_revision is not None
+            and decision.portfolio_snapshot_revision != account.state_revision
+        ):
+            raise PaperTradingError("risk decision portfolio revision is no longer current")
 
     @staticmethod
     def _validate_order_request(
@@ -672,7 +854,22 @@ class PaperTradingEngine:
             connection, account.account_id, quote.instrument.canonical_symbol
         )
         if position is None:
-            return account
+            self.store.update_account_projection(
+                connection,
+                account,
+                cash=account.cash,
+                realized_pnl=account.realized_pnl,
+                fees=account.fees,
+                high_water_mark=account.high_water_mark,
+                risk_day=account.risk_day,
+                risk_day_starting_equity=account.risk_day_starting_equity,
+                timestamp=timestamp,
+            )
+            return replace(
+                account,
+                updated_at=timestamp,
+                state_revision=account.state_revision + 1,
+            )
         marked = replace(
             position,
             market_price=quote.midpoint,
@@ -695,7 +892,12 @@ class PaperTradingEngine:
             risk_day_starting_equity=account.risk_day_starting_equity,
             timestamp=timestamp,
         )
-        return replace(account, high_water_mark=high_water_mark, updated_at=timestamp)
+        return replace(
+            account,
+            high_water_mark=high_water_mark,
+            updated_at=timestamp,
+            state_revision=account.state_revision + 1,
+        )
 
     def _gross_exposure(self, connection: Connection, account_id: str) -> Decimal:
         """Return durable marked gross notional used by the reservation boundary."""
@@ -709,6 +911,26 @@ class PaperTradingEngine:
                 for position in self.store.transaction_positions(connection, account_id)
             ),
             Decimal("0"),
+        )
+
+    def _projected_gross_exposure(
+        self, connection: Connection, account_id: str, override: PaperPosition
+    ) -> Decimal:
+        """Calculate marked gross exposure after a candidate fill, fail closed."""
+
+        return sum(
+            (
+                max(
+                    abs(position.quantity * position.market_price),
+                    abs(position.quantity * position.average_entry_price),
+                )
+                for position in self.store.transaction_positions(connection, account_id)
+                if position.instrument.canonical_symbol != override.instrument.canonical_symbol
+            ),
+            Decimal("0"),
+        ) + max(
+            abs(override.quantity * override.market_price),
+            abs(override.quantity * override.average_entry_price),
         )
 
     def _roll_risk_day_if_needed(
@@ -743,7 +965,7 @@ class PaperTradingEngine:
     ) -> None:
         daily_pnl = equity - account.risk_day_starting_equity
         if daily_pnl <= -account.daily_loss_limit:
-            self.store.activate_lock(
+            self._activate_lock_in_transaction(
                 connection,
                 account.account_id,
                 PaperRiskLockType.DAILY_LOSS_LOCK,
@@ -751,13 +973,36 @@ class PaperTradingEngine:
                 timestamp,
             )
         if account.high_water_mark - equity >= account.max_drawdown:
-            self.store.activate_lock(
+            self._activate_lock_in_transaction(
                 connection,
                 account.account_id,
                 PaperRiskLockType.DRAWDOWN_LOCK,
                 "high_water_mark_drawdown_limit",
                 timestamp,
             )
+
+    def _activate_lock_in_transaction(
+        self,
+        connection: Connection,
+        account_id: str,
+        lock_type: PaperRiskLockType,
+        reason: str,
+        timestamp: datetime,
+    ) -> None:
+        """Activate a lock and cancel open risk-increasing orders atomically."""
+
+        self.store.activate_lock(connection, account_id, lock_type, reason, timestamp)
+        for order in self.store.locked_open_orders_for_account(connection, account_id):
+            if order.authorization_action is RiskAction.REDUCTION_ONLY:
+                continue
+            cancelled = replace(
+                order,
+                status=PaperOrderStatus.CANCELLED,
+                rejection_reason="risk_lock_active",
+                last_market_event_at=timestamp,
+            )
+            self.store.update_order(connection, cancelled, timestamp)
+            self.store.release_reservation(connection, cancelled, timestamp)
 
 
 __all__ = ["PaperTradingEngine"]
