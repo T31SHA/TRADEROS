@@ -12,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import traderos.strategies.runtime as runtime_identity_module
+from traderos.allocation import AllocationConflictPolicy, AllocationPolicy, BudgetLimit
 from traderos.core.config import Settings, TradingMode
 from traderos.data.bars import MarketBar
 from traderos.data.hashing import market_bar_content_hash
@@ -36,6 +38,7 @@ from traderos.signals import MajorityVoteFusionPolicy
 from traderos.signals.errors import SignalFusionError
 from traderos.strategies import ForexTrendFollowingStrategy
 from traderos.strategies.errors import StrategyCausalityError
+from traderos.strategies.runtime import runtime_content_identity
 from traderos.worker import PaperWorker, WorkerDependencies
 from traderos.worker.pipeline import PaperDecisionPipeline, StrategyRuntimeBinding
 from traderos.worker.store import WorkerStore
@@ -104,9 +107,7 @@ def _artifact(strategy: ForexTrendFollowingStrategy) -> StrategyArtifact:
         regime_dependencies=("ema_percentile_regime.v1",),
         risk_dependencies=("risk_firewall.v1",),
         known_failure_modes=("synthetic fixture",),
-        code_identity=(
-            f"{strategy.__class__.__module__}:{strategy.__class__.__qualname__}"
-        ),
+        code_identity=runtime_content_identity(strategy),
         dataset_identity="synthetic-fixture-dataset",
         configuration_identity=None,
         environment_reference="pytest",
@@ -135,6 +136,20 @@ def _pipeline(
         timestamp=timestamp,
     )
     strategy = ForexTrendFollowingStrategy()
+    allocation_policy = AllocationPolicy(
+        policy_id="synthetic-allocation",
+        policy_version="1",
+        max_gross_exposure=Decimal("100000"),
+        max_net_exposure=Decimal("100000"),
+        max_incremental_exposure=Decimal("100000"),
+        max_turnover_per_decision=Decimal("100000"),
+        instrument_limits=(BudgetLimit(INSTRUMENT.canonical_symbol, Decimal("100000")),),
+        strategy_budgets=(BudgetLimit("forex_trend_following@1", Decimal("100000")),),
+        family_budgets=(BudgetLimit("synthetic-baseline", Decimal("100000")),),
+        asset_class_limits=(),
+        conflict_policy=AllocationConflictPolicy.NET_OPPOSING,
+        allocation_increment=Decimal("0.000001"),
+    )
     governance = SimpleNamespace(
         explain_strategy_eligibility=lambda strategy_id, version: SimpleNamespace(
             operationally_eligible=True, reasons=()
@@ -148,15 +163,14 @@ def _pipeline(
             StrategyRuntimeBinding(
                 implementation_id="forex_trend_following",
                 implementation_version="1",
-                code_identity=(
-                    f"{strategy.__class__.__module__}:{strategy.__class__.__qualname__}"
-                ),
+                code_identity=runtime_content_identity(strategy),
                 strategy=strategy,
             ),
         ),
         regime_detector=EmaPercentileRegimeDetector(),
         fusion_policy=MajorityVoteFusionPolicy(),
         risk_firewall=firewall,
+        allocation_policy=allocation_policy,
     )
     return pipeline, paper
 
@@ -231,9 +245,7 @@ def test_worker_fixture_is_blocked_before_paper_order(tmp_path: Path) -> None:
             StrategyRuntimeBinding(
                 implementation_id="forex_trend_following",
                 implementation_version="1",
-                code_identity=(
-                    f"{strategy.__class__.__module__}:{strategy.__class__.__qualname__}"
-                ),
+                code_identity=runtime_content_identity(strategy),
                 strategy=strategy,
             ),
         ),
@@ -328,6 +340,89 @@ def test_governed_fixture_reaches_firewall_and_paper_engine_once(tmp_path: Path)
         "direction": "long",
         "intent_count": "1",
     }
+
+
+def test_missing_approved_allocation_policy_blocks_new_order(tmp_path: Path) -> None:
+    pipeline, paper = _pipeline(tmp_path)
+    pipeline.allocation_policy = None
+    bars = _bars()
+    now = bars[-1].timestamp + bars[-1].timeframe.duration
+
+    result = pipeline.run(
+        account_id=ACCOUNT_ID,
+        strategy_keys=(("forex_trend_following", "1"),),
+        bars=bars,
+        dataset_version="synthetic-fixture-dataset",
+        dataset_hash="synthetic-fixture-dataset",
+        now=now,
+        system_health=SystemHealthSnapshot(now, SystemHealthStatus.HEALTHY),
+    )
+
+    assert result.action == "NO_TRADE"
+    assert "ALLOCATION_POLICY_UNAVAILABLE" in result.reason_codes
+    assert paper.store.orders(ACCOUNT_ID) == ()
+
+
+def test_strategy_disablement_between_allocation_and_execution_blocks_order(
+    tmp_path: Path,
+) -> None:
+    pipeline, paper = _pipeline(tmp_path)
+    calls = 0
+
+    def eligibility(strategy_id: str, version: str) -> SimpleNamespace:
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            operationally_eligible=calls == 1,
+            reasons=() if calls == 1 else ("STRATEGY_DISABLED",),
+        )
+
+    pipeline.governance.explain_strategy_eligibility = eligibility  # type: ignore[attr-defined]
+    bars = _bars()
+    now = bars[-1].timestamp + bars[-1].timeframe.duration
+
+    result = pipeline.run(
+        account_id=ACCOUNT_ID,
+        strategy_keys=(("forex_trend_following", "1"),),
+        bars=bars,
+        dataset_version="synthetic-fixture-dataset",
+        dataset_hash="synthetic-fixture-dataset",
+        now=now,
+        system_health=SystemHealthSnapshot(now, SystemHealthStatus.HEALTHY),
+    )
+
+    assert result.action == "NO_TRADE"
+    assert result.reason_codes == ("ALLOCATION_STRATEGY_GOVERNANCE_CHANGED",)
+    assert paper.store.orders(ACCOUNT_ID) == ()
+
+
+def test_stale_allocation_portfolio_revision_cannot_execute(tmp_path: Path) -> None:
+    pipeline, paper = _pipeline(tmp_path)
+    original_snapshot = paper.portfolio_risk_snapshot(ACCOUNT_ID)
+    calls = 0
+
+    def changing_snapshot(account_id: str):
+        nonlocal calls
+        calls += 1
+        return original_snapshot if calls == 1 else replace(original_snapshot, revision=99)
+
+    pipeline.paper_engine.portfolio_risk_snapshot = changing_snapshot  # type: ignore[method-assign]
+    bars = _bars()
+    now = bars[-1].timestamp + bars[-1].timeframe.duration
+
+    result = pipeline.run(
+        account_id=ACCOUNT_ID,
+        strategy_keys=(("forex_trend_following", "1"),),
+        bars=bars,
+        dataset_version="synthetic-fixture-dataset",
+        dataset_hash="synthetic-fixture-dataset",
+        now=now,
+        system_health=SystemHealthSnapshot(now, SystemHealthStatus.HEALTHY),
+    )
+
+    assert result.action == "NO_TRADE"
+    assert result.reason_codes == ("ALLOCATION_PORTFOLIO_REVISION_STALE",)
+    assert paper.store.orders(ACCOUNT_ID) == ()
 
 
 def test_unrelated_quality_event_is_not_entered_into_regime_context(tmp_path: Path) -> None:
@@ -680,6 +775,73 @@ def test_stale_system_health_vetoes_without_creating_an_order(tmp_path: Path) ->
     assert paper.store.orders(ACCOUNT_ID) == ()
 
 
+def test_quote_fresh_at_decision_cutoff_but_stale_at_processing_time_is_blocked(
+    tmp_path: Path,
+) -> None:
+    bars = _bars()
+    pipeline, paper = _pipeline(tmp_path)
+    decision_time = bars[-1].timestamp + bars[-1].timeframe.duration
+    processing_time = decision_time + timedelta(minutes=2)
+
+    result = pipeline.run(
+        account_id=ACCOUNT_ID,
+        strategy_keys=(("forex_trend_following", "1"),),
+        bars=bars,
+        dataset_version="synthetic-fixture-dataset",
+        dataset_hash="synthetic-fixture-dataset",
+        now=decision_time,
+        processing_clock=lambda: processing_time,
+        system_health=SystemHealthSnapshot(processing_time, SystemHealthStatus.HEALTHY),
+    )
+
+    assert result.action == "NO_TRADE"
+    assert result.reason_codes == ("DATA_QUOTE_STALE",)
+    assert paper.store.orders(ACCOUNT_ID) == ()
+
+
+def test_ingestion_after_bar_close_by_decision_cutoff_is_admissible(tmp_path: Path) -> None:
+    bars = _bars()
+    pipeline, paper = _pipeline(tmp_path)
+    decision_time = bars[-1].timestamp + bars[-1].timeframe.duration
+
+    result = pipeline.run(
+        account_id=ACCOUNT_ID,
+        strategy_keys=(("forex_trend_following", "1"),),
+        bars=bars,
+        dataset_version="synthetic-fixture-dataset",
+        dataset_hash="synthetic-fixture-dataset",
+        now=decision_time,
+        system_health=SystemHealthSnapshot(decision_time, SystemHealthStatus.HEALTHY),
+    )
+
+    assert result.action == "ORDER_SUBMITTED"
+    assert paper.store.orders(ACCOUNT_ID)
+
+
+def test_processing_delay_rechecks_freshness_before_order_mutation(tmp_path: Path) -> None:
+    bars = _bars()
+    pipeline, paper = _pipeline(tmp_path)
+    decision_time = bars[-1].timestamp + bars[-1].timeframe.duration
+    processing_times = iter(
+        (decision_time, decision_time, decision_time + timedelta(minutes=2))
+    )
+
+    result = pipeline.run(
+        account_id=ACCOUNT_ID,
+        strategy_keys=(("forex_trend_following", "1"),),
+        bars=bars,
+        dataset_version="synthetic-fixture-dataset",
+        dataset_hash="synthetic-fixture-dataset",
+        now=decision_time,
+        processing_clock=lambda: next(processing_times),
+        system_health=SystemHealthSnapshot(decision_time, SystemHealthStatus.HEALTHY),
+    )
+
+    assert result.action == "NO_TRADE"
+    assert result.reason_codes == ("DATA_QUOTE_STALE_AT_EXECUTION",)
+    assert paper.store.orders(ACCOUNT_ID) == ()
+
+
 def test_later_decision_processes_pending_order_once(tmp_path: Path) -> None:
     initial_bars = _bars()
     pipeline, paper = _pipeline(tmp_path)
@@ -725,7 +887,9 @@ def test_later_decision_processes_pending_order_once(tmp_path: Path) -> None:
     )
 
     assert len(second.fills) == 1
-    assert len(paper.store.orders(ACCOUNT_ID)) == 1
+    # The allocator preserves the unfilled remainder as a new bounded request
+    # after the first original authorization expires at the adverse fill.
+    assert len(paper.store.orders(ACCOUNT_ID)) == 2
     assert len(paper.store.fills(ACCOUNT_ID)) == 1
 
 
@@ -814,6 +978,65 @@ def test_governed_fixture_rejects_runtime_identity_mismatch(tmp_path: Path) -> N
 
     assert result.health == "BLOCKED"
     assert "forex_trend_following@1:STRATEGY_CODE_IDENTITY_MISMATCH" in result.reason_codes
+    assert paper.store.orders(ACCOUNT_ID) == ()
+
+
+def test_old_artifact_cannot_authorize_changed_content_at_same_runtime_locator(
+    tmp_path: Path, monkeypatch
+) -> None:
+    bars = _bars()
+    pipeline, paper = _pipeline(tmp_path)
+    now = bars[-1].timestamp + bars[-1].timeframe.duration
+    strategy = ForexTrendFollowingStrategy()
+    old_identity = runtime_content_identity(strategy)
+    old_artifact = _artifact(strategy)
+    original_module_source = runtime_identity_module._module_source
+
+    def changed_module_source(module):
+        path, content = original_module_source(module)
+        if module.__name__ == "traderos.strategies.baselines":
+            content += b"\n# implementation content changed\n"
+        return path, content
+
+    monkeypatch.setattr(runtime_identity_module, "_module_source", changed_module_source)
+    changed_identity = runtime_content_identity(strategy)
+    assert changed_identity != old_identity
+    changed_binding = StrategyRuntimeBinding(
+        implementation_id="forex_trend_following",
+        implementation_version="1",
+        code_identity=changed_identity,
+        strategy=strategy,
+    )
+    changed_pipeline = PaperDecisionPipeline(
+        paper_engine=paper,
+        governance=cast(
+            StrategyGovernanceService,
+            SimpleNamespace(
+                explain_strategy_eligibility=lambda strategy_id, version: SimpleNamespace(
+                    operationally_eligible=True, reasons=()
+                ),
+                get_strategy_artifact=lambda strategy_id, version: old_artifact,
+            ),
+        ),
+        runtime_bindings=(changed_binding,),
+        regime_detector=EmaPercentileRegimeDetector(),
+        fusion_policy=MajorityVoteFusionPolicy(),
+        risk_firewall=RiskFirewall(),
+    )
+
+    result = changed_pipeline.run(
+        account_id=ACCOUNT_ID,
+        strategy_keys=(("forex_trend_following", "1"),),
+        bars=bars,
+        dataset_version="synthetic-fixture-dataset",
+        dataset_hash="synthetic-fixture-dataset",
+        now=now,
+        system_health=SystemHealthSnapshot(now, SystemHealthStatus.HEALTHY),
+    )
+
+    assert result.action == "NO_TRADE"
+    assert "forex_trend_following@1:STRATEGY_CODE_IDENTITY_MISMATCH" in result.reason_codes
+    assert old_artifact.code_identity == old_identity
     assert paper.store.orders(ACCOUNT_ID) == ()
 
 

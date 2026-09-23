@@ -1,6 +1,6 @@
 """Offline, durable Phase 8 paper-trading boundary."""
 
-from traderos.paper.engine import PaperTradingEngine
+from traderos.paper.engine import OperationalPaperTradingEngine, PaperTradingEngine
 from traderos.paper.models import (
     PaperAccount,
     PaperExecutionConfig,
@@ -30,6 +30,7 @@ __all__ = [
     "PaperRiskLockType",
     "PaperRiskSnapshot",
     "PaperTradingEngine",
+    "OperationalPaperTradingEngine",
     "PaperTradingError",
     "SizingResult",
     "SqlAlchemyPaperStore",

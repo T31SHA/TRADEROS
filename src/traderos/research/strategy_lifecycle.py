@@ -307,10 +307,13 @@ def _reference_from_canonical(payload: object) -> ResearchReference:
 class StrategyArtifact:
     """Immutable content-addressed strategy version.
 
-    ``strategy_id`` and ``strategy_version`` are stable lookup identity.  The
-    ``artifact_hash`` is derived from the complete canonical payload and is a
-    separate integrity identity.  No result or approval is included in this
-    payload, avoiding circular hashes.
+    ``strategy_id`` and ``strategy_version`` are stable lookup identity.
+    ``code_identity`` records the immutable implementation content/build
+    identity; the operational runtime binding keeps its implementation
+    locator separate and verifies the loaded source manifest against this
+    value. The ``artifact_hash`` is derived from the complete canonical
+    payload and is a separate integrity identity. No result or approval is
+    included in this payload, avoiding circular hashes.
     """
 
     strategy_id: str

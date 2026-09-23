@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from traderos.data.time import require_utc
 from traderos.database.schema import metadata, worker_cycles, worker_leases, worker_states
+from traderos.execution.authority import ExecutionAuthority
 from traderos.worker.models import (
     DEFAULT_STRATEGY_HEALTH_CYCLE_LIMIT,
     CycleOutcome,
@@ -80,6 +81,8 @@ class WorkerStore:
         else:
             metadata.create_all(self.engine)
         self._ensure_lease_claim_column()
+        self._ensure_lease_generation_column()
+        self._ensure_paper_authorization_columns()
         self._ensure_data_latest_column()
 
     def _require_migrated_schema(self) -> None:
@@ -185,6 +188,57 @@ class WorkerStore:
             }
             if "data_latest_at" not in columns:
                 raise
+
+    def _ensure_lease_generation_column(self) -> None:
+        """Add the local-store fence generation without rewriting lease rows."""
+
+        columns = {item["name"] for item in inspect(self.engine).get_columns("worker_leases")}
+        if "fence_generation" in columns:
+            return
+        try:
+            with self.engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE worker_leases "
+                        "ADD COLUMN fence_generation BIGINT NOT NULL DEFAULT 1"
+                    )
+                )
+        except OperationalError:
+            columns = {
+                item["name"] for item in inspect(self.engine).get_columns("worker_leases")
+            }
+            if "fence_generation" not in columns:
+                raise
+
+    def _ensure_paper_authorization_columns(self) -> None:
+        """Add immutable order-bound columns to existing local databases."""
+
+        columns = {item["name"] for item in inspect(self.engine).get_columns("paper_orders")}
+        definitions = (
+            (
+                "authorization_max_new_notional",
+                "NUMERIC(28,12) NOT NULL DEFAULT 0",
+            ),
+            (
+                "authorization_max_reduction_notional",
+                "NUMERIC(28,12) NOT NULL DEFAULT 0",
+            ),
+            ("authorization_costs_included", "BOOLEAN NOT NULL DEFAULT TRUE"),
+        )
+        for name, definition in definitions:
+            if name in columns:
+                continue
+            try:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(f"ALTER TABLE paper_orders ADD COLUMN {name} {definition}")
+                    )
+            except OperationalError:
+                columns = {
+                    item["name"] for item in inspect(self.engine).get_columns("paper_orders")
+                }
+                if name not in columns:
+                    raise
 
     def health_check(self) -> None:
         with self.engine.connect() as connection:
@@ -493,6 +547,7 @@ class WorkerStore:
                     worker_leases.c.owner_id,
                     worker_leases.c.claimed_workload_id,
                     worker_leases.c.expires_at,
+                    worker_leases.c.fence_generation,
                 )
                 .where(worker_leases.c.workload_id == lease_key)
                 .with_for_update()
@@ -594,7 +649,7 @@ class WorkerStore:
         now: datetime,
         duration: timedelta,
         lease_key: str | None = None,
-    ) -> bool:
+    ) -> ExecutionAuthority | None:
         require_utc(now)
         coordination_key = lease_key or workload_id
         expires_at = now + duration
@@ -613,14 +668,20 @@ class WorkerStore:
                     active_claim
                     and (current_owner != owner_id or current_claim != workload_id)
                 ):
-                    return False
+                    return None
                 acquired_at = row["acquired_at"] if row is not None and active_claim else now
+                generation = (
+                    int(row["fence_generation"])
+                    if row is not None and active_claim
+                    else (int(row["fence_generation"]) + 1 if row is not None else 1)
+                )
                 values = {
                     "claimed_workload_id": workload_id,
                     "owner_id": owner_id,
                     "acquired_at": acquired_at,
                     "heartbeat_at": now,
                     "expires_at": expires_at,
+                    "fence_generation": generation,
                 }
                 if row is None:
                     connection.execute(
@@ -632,10 +693,17 @@ class WorkerStore:
                         .where(worker_leases.c.workload_id == coordination_key)
                         .values(**values)
                     )
-                return True
+                return ExecutionAuthority(
+                    workload_id=workload_id,
+                    lease_key=coordination_key,
+                    owner_id=owner_id,
+                    generation=generation,
+                    observed_at=now,
+                    expires_at=expires_at,
+                )
         except IntegrityError:
             # A concurrent first acquisition won the primary-key race.
-            return False
+            return None
 
     def heartbeat(
         self,
@@ -645,7 +713,7 @@ class WorkerStore:
         now: datetime,
         duration: timedelta,
         lease_key: str | None = None,
-    ) -> bool:
+    ) -> ExecutionAuthority | None:
         require_utc(now)
         coordination_key = lease_key or workload_id
         with self._transaction(immediate_sqlite=True) as connection:
@@ -654,6 +722,7 @@ class WorkerStore:
                     worker_leases.c.owner_id,
                     worker_leases.c.claimed_workload_id,
                     worker_leases.c.expires_at,
+                    worker_leases.c.fence_generation,
                 )
                 .where(worker_leases.c.workload_id == coordination_key)
                 .with_for_update()
@@ -666,7 +735,9 @@ class WorkerStore:
                 or expires_at is None
                 or expires_at <= now
             ):
-                return False
+                return None
+            generation = int(row["fence_generation"])
+            next_expiry = now + duration
             result = connection.execute(
                 update(worker_leases)
                 .where(
@@ -674,9 +745,18 @@ class WorkerStore:
                     worker_leases.c.owner_id == owner_id,
                     worker_leases.c.claimed_workload_id == workload_id,
                 )
-                .values(heartbeat_at=now, expires_at=now + duration)
+                .values(heartbeat_at=now, expires_at=next_expiry)
             )
-            return result.rowcount == 1
+            if result.rowcount != 1:
+                return None
+            return ExecutionAuthority(
+                workload_id=workload_id,
+                lease_key=coordination_key,
+                owner_id=owner_id,
+                generation=generation,
+                observed_at=now,
+                expires_at=next_expiry,
+            )
 
     def release_lease(
         self, workload_id: str, owner_id: str, *, lease_key: str | None = None

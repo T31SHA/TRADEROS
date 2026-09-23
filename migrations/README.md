@@ -57,6 +57,19 @@ Migration 012 adds the claimed workload identity to worker coordination leases.
 This lets account-scoped status observation distinguish an expired workload
 from a stale status row whose account is now controlled by another workload.
 
-Manual schema edits are not an accepted deployment path. A migration runner
-must apply these files in numeric order in deployment automation before a
-PostgreSQL store is used.
+Migration 013 adds the monotonically increasing lease fence generation and
+persists the original trade-level authorization bounds on each paper order.
+Existing orders retain their historical rows; legacy bound values are zero and
+cannot authorize new operational fills until an explicit compatible migration
+policy is defined.
+
+Manual schema edits are not an accepted deployment path. The repository
+runner is fresh-empty-database-only: it requires
+`TRADEROS_POSTGRES_FRESH=1` and refuses a database with any existing public
+schema table. Existing-database upgrades are a separate deployment operation
+and must apply the numbered files in numeric order through the deployment
+migration mechanism, with its backup, lock, and migration-ledger controls;
+the runner must not be used for that operation. Existing-database upgrades are
+not yet supported. The runner's only non-disposable use is the one-time
+initialization of a new, empty first-deployment database
+(`docs/RENDER_DEPLOYMENT.md`).

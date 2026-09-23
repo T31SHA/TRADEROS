@@ -238,7 +238,7 @@ class RiskFirewall:
             checks,
             check_id="market_freshness",
             timestamp=market.timestamp,
-            decision_timestamp=context.decision_timestamp,
+            decision_timestamp=context.freshness_timestamp,
             maximum_age=self.parameters.max_market_data_age,
             stale_reason=RiskReasonCode.DATA_STALE,
         )
@@ -371,7 +371,7 @@ class RiskFirewall:
                 checks,
                 check_id="system_health_freshness",
                 timestamp=health.timestamp,
-                decision_timestamp=context.decision_timestamp,
+                decision_timestamp=context.freshness_timestamp,
                 maximum_age=self.parameters.max_system_health_age,
                 stale_reason=RiskReasonCode.SYSTEM_HEALTH_STALE,
             )
@@ -398,14 +398,14 @@ class RiskFirewall:
                 checks,
                 check_id="portfolio_freshness",
                 timestamp=snapshot.timestamp,
-                decision_timestamp=context.decision_timestamp,
+                decision_timestamp=context.freshness_timestamp,
                 maximum_age=self.parameters.max_risk_snapshot_age,
                 stale_reason=RiskReasonCode.STALE_RISK_SNAPSHOT,
             )
             marks_current = not snapshot.positions or (
                 snapshot.position_mark_timestamp is not None
                 and snapshot.position_mark_timestamp <= snapshot.timestamp
-                and context.decision_timestamp - snapshot.position_mark_timestamp
+                and context.freshness_timestamp - snapshot.position_mark_timestamp
                 <= self.parameters.max_risk_snapshot_age
             )
             self._check(

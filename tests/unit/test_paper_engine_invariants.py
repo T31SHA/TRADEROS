@@ -55,6 +55,7 @@ def _decision(
     timestamp: datetime = NOW,
     direction: FusionDirection = FusionDirection.LONG,
     account_id: str = "engine-account",
+    max_new_notional: Decimal = Decimal("500"),
 ) -> RiskDecision:
     value = RiskDecision(
         decision_id="pending",
@@ -71,7 +72,7 @@ def _decision(
         checks=(),
         authorization=RiskAuthorization(
             action=RiskAction.NEW_OR_INCREASE,
-            max_new_notional=Decimal("500"),
+            max_new_notional=max_new_notional,
             max_loss_at_stop=Decimal("50"),
             max_reduction_notional=Decimal("0"),
         ),
@@ -762,3 +763,68 @@ def test_default_fill_size_and_flat_position_are_exact_decimal_projections(
     assert flat.quantity == Decimal("0")
     assert flat.average_entry_price == Decimal("0")
     assert realized == Decimal("2")
+
+
+def test_original_trade_authorization_bounds_survive_partial_adverse_fills_and_restart(
+    engine: PaperTradingEngine,
+) -> None:
+    account_id = "bounded-account"
+    engine.create_account(
+        account_id=account_id,
+        account_currency="USD",
+        starting_cash=Decimal("10000"),
+        risk_capacity=Decimal("10000"),
+        daily_loss_limit=Decimal("500"),
+        max_drawdown=Decimal("1000"),
+        risk_policy_id="risk_firewall",
+        risk_policy_configuration_id="engine-config",
+        timestamp=NOW,
+    )
+    bounded = PaperTradingEngine(
+        engine.store,
+        PaperExecutionConfig(
+            max_fill_quantity=Decimal("2"),
+            commission_rate=Decimal("0.01"),
+        ),
+    )
+    order = bounded.submit(
+        account_id=account_id,
+        idempotency_key="bounded-trade",
+        risk_decision=_decision(
+            "bounded-trade",
+            account_id=account_id,
+            max_new_notional=Decimal("1000"),
+        ),
+        quote=_quote(),
+        timestamp=NOW,
+    )
+    assert order.authorization_max_new_notional == Decimal("1000")
+
+    first_quote = PaperQuote(
+        _instrument(), NOW + timedelta(seconds=1), Decimal("149"), Decimal("150")
+    )
+    second_quote = PaperQuote(
+        _instrument(), NOW + timedelta(seconds=2), Decimal("399"), Decimal("400")
+    )
+    first_fills = bounded.process_quote(
+        account_id=account_id, quote=first_quote, timestamp=first_quote.timestamp
+    )
+    second_fills = bounded.process_quote(
+        account_id=account_id, quote=second_quote, timestamp=second_quote.timestamp
+    )
+
+    fills = (*first_fills, *second_fills)
+    assert first_fills and second_fills
+    total_cost = sum(
+        (fill.quantity * fill.price + fill.commission for fill in fills), Decimal("0")
+    )
+    assert total_cost <= Decimal("1000")
+    persisted = engine.store.order(account_id, order.order_id)
+    assert persisted.authorization_max_new_notional == Decimal("1000")
+    restarted = PaperTradingEngine(
+        engine.store,
+        PaperExecutionConfig(max_fill_quantity=Decimal("2"), commission_rate=Decimal("0.01")),
+    )
+    assert restarted.store.order(account_id, order.order_id).authorization_max_new_notional == (
+        Decimal("1000")
+    )

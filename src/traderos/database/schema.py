@@ -248,6 +248,9 @@ paper_orders = Table(
     Column("sizing_configuration_id", String(128), nullable=False),
     Column("source_intent_id", String(128), nullable=False),
     Column("authorization_action", String(32), nullable=False),
+    Column("authorization_max_new_notional", Numeric(28, 12), nullable=False),
+    Column("authorization_max_reduction_notional", Numeric(28, 12), nullable=False),
+    Column("authorization_costs_included", Boolean, nullable=False, default=True),
     Column("status", String(32), nullable=False),
     Column("rejection_reason", Text),
     UniqueConstraint("account_id", "idempotency_key", name="uq_paper_order_idempotency"),
@@ -566,6 +569,7 @@ worker_leases = Table(
     Column("acquired_at", DateTime(timezone=True), nullable=False),
     Column("heartbeat_at", DateTime(timezone=True), nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("fence_generation", BigInteger, nullable=False, default=1),
 )
 
 worker_states = Table(

@@ -14,6 +14,7 @@ from traderos.backtesting.errors import ExecutionPolicyError
 from traderos.backtesting.execution import adverse_execution_price, commission_amount
 from traderos.backtesting.models import CostConfig, OrderSide, OrderType, TimeInForce
 from traderos.data.time import require_utc
+from traderos.execution.authority import ExecutionAuthority
 from traderos.paper.models import (
     PaperAccount,
     PaperExecutionConfig,
@@ -52,6 +53,19 @@ class PaperTradingEngine:
     ) -> None:
         self.store = store
         self.config = config or PaperExecutionConfig()
+        self._requires_execution_authority = False
+
+    def _lock_execution_authority(
+        self,
+        connection: Connection,
+        authority: ExecutionAuthority | None,
+        *,
+        at: datetime,
+    ) -> None:
+        if self._requires_execution_authority and authority is None:
+            raise PaperTradingError("operational paper execution requires a trusted authority")
+        if authority is not None:
+            self.store.lock_execution_authority(connection, authority, at=at)
 
     def create_account(
         self,
@@ -102,6 +116,7 @@ class PaperTradingEngine:
         limit_price: Decimal | None = None,
         stop_price: Decimal | None = None,
         expires_at: datetime | None = None,
+        execution_authority: ExecutionAuthority | None = None,
     ) -> PaperOrder:
         """Atomically consume an approved immutable decision and reserve capacity."""
 
@@ -124,6 +139,7 @@ class PaperTradingEngine:
                 raise PaperTradingError("DAY order expiration cannot exceed UTC day boundary")
         try:
             with self.store.engine.begin() as connection:
+                self._lock_execution_authority(connection, execution_authority, at=timestamp)
                 account = self.store.locked_account(connection, account_id)
                 existing = self.store.locked_order_by_idempotency(
                     connection, account_id, idempotency_key
@@ -197,6 +213,9 @@ class PaperTradingEngine:
                     source_intent_id=risk_decision.intent_id,
                     authorization_action=authorization.action,
                     status=PaperOrderStatus.ACCEPTED,
+                    authorization_max_new_notional=authorization.max_new_notional,
+                    authorization_max_reduction_notional=authorization.max_reduction_notional,
+                    authorization_costs_included=True,
                 )
                 self.store.insert_order_and_reservation(
                     connection,
@@ -218,7 +237,12 @@ class PaperTradingEngine:
             raise PaperTradingError("paper submission transaction failed") from exc
 
     def process_quote(
-        self, *, account_id: str, quote: PaperQuote, timestamp: datetime
+        self,
+        *,
+        account_id: str,
+        quote: PaperQuote,
+        timestamp: datetime,
+        execution_authority: ExecutionAuthority | None = None,
     ) -> tuple[PaperFill, ...]:
         """Apply fills only from a later supplied quote; no same-event fill exists."""
 
@@ -228,6 +252,7 @@ class PaperTradingEngine:
         fills: list[PaperFill] = []
         try:
             with self.store.engine.begin() as connection:
+                self._lock_execution_authority(connection, execution_authority, at=timestamp)
                 account = self.store.locked_account(connection, account_id)
                 current_position = self.store.locked_position(
                     connection, account_id, quote.instrument.canonical_symbol
@@ -300,15 +325,49 @@ class PaperTradingEngine:
                             continue
                     if self.config.max_fill_quantity is not None:
                         quantity = min(quantity, self.config.max_fill_quantity)
-                    commission = commission_amount(
-                        quantity,
-                        price,
-                        CostConfig(
-                            per_unit=self.config.commission_per_unit,
-                            rate=self.config.commission_rate,
-                            minimum=self.config.minimum_commission,
-                        ),
+                    requested_quantity = quantity
+                    prior_filled_notional, prior_commission = self.store.locked_filled_totals(
+                        connection, order.order_id
                     )
+                    authorization_bound = (
+                        order.authorization_max_new_notional
+                        if order.authorization_action is RiskAction.NEW_OR_INCREASE
+                        else order.authorization_max_reduction_notional
+                    )
+                    cost_config = CostConfig(
+                        per_unit=self.config.commission_per_unit,
+                        rate=self.config.commission_rate,
+                        minimum=self.config.minimum_commission,
+                    )
+                    remaining_authorized_cost = (
+                        authorization_bound
+                        - prior_filled_notional
+                        - (prior_commission if order.authorization_costs_included else Decimal("0"))
+                    )
+                    while quantity >= self.config.minimum_quantity and (
+                        quantity * price
+                        + (
+                            commission_amount(quantity, price, cost_config)
+                            if order.authorization_costs_included
+                            else Decimal("0")
+                        )
+                        > remaining_authorized_cost
+                    ):
+                        quantity -= self.config.quantity_increment
+                    if quantity < self.config.minimum_quantity:
+                        rejected = replace(
+                            order,
+                            status=(
+                                PaperOrderStatus.REJECTED
+                                if order.filled_quantity == 0
+                                else PaperOrderStatus.EXPIRED
+                            ),
+                            rejection_reason="authorization_bound_exceeded_at_fill",
+                        )
+                        self.store.update_order(connection, rejected, quote.timestamp)
+                        self.store.release_reservation(connection, rejected, quote.timestamp)
+                        continue
+                    commission = commission_amount(quantity, price, cost_config)
                     fill = PaperFill(
                         fill_id=f"{order.order_id}:{order.filled_quantity + quantity}",
                         order_id=order.order_id,
@@ -382,6 +441,11 @@ class PaperTradingEngine:
                         if filled == order.quantity
                         else PaperOrderStatus.PARTIALLY_FILLED
                     )
+                    if quantity < requested_quantity and filled < order.quantity:
+                        # A repriced slice consumed the remaining original
+                        # authorization.  The residual activity cannot be
+                        # silently repriced under a larger account capacity.
+                        new_status = PaperOrderStatus.EXPIRED
                     if order.time_in_force is TimeInForce.IOC and filled < order.quantity:
                         new_status = PaperOrderStatus.EXPIRED
                     updated_order = replace(
@@ -448,12 +512,19 @@ class PaperTradingEngine:
         return tuple(fills)
 
     def cancel(
-        self, *, account_id: str, order_id: str, timestamp: datetime, reason: str
+        self,
+        *,
+        account_id: str,
+        order_id: str,
+        timestamp: datetime,
+        reason: str,
+        execution_authority: ExecutionAuthority | None = None,
     ) -> PaperOrder:
         require_utc(timestamp)
         if not reason.strip():
             raise PaperTradingError("cancellation reason must not be blank")
         with self.store.engine.begin() as connection:
+            self._lock_execution_authority(connection, execution_authority, at=timestamp)
             self.store.locked_account(connection, account_id)
             order = self.store.locked_order(connection, account_id, order_id)
             if order.status not in {PaperOrderStatus.ACCEPTED, PaperOrderStatus.PARTIALLY_FILLED}:
@@ -469,12 +540,19 @@ class PaperTradingEngine:
             return cancelled
 
     def activate_risk_lock(
-        self, *, account_id: str, lock_type: PaperRiskLockType, reason: str, timestamp: datetime
+        self,
+        *,
+        account_id: str,
+        lock_type: PaperRiskLockType,
+        reason: str,
+        timestamp: datetime,
+        execution_authority: ExecutionAuthority | None = None,
     ) -> None:
         require_utc(timestamp)
         if not reason.strip():
             raise PaperTradingError("risk lock reason must not be blank")
         with self.store.engine.begin() as connection:
+            self._lock_execution_authority(connection, execution_authority, at=timestamp)
             self.store.locked_account(connection, account_id)
             self._activate_lock_in_transaction(
                 connection, account_id, lock_type, reason, timestamp
@@ -1005,4 +1083,20 @@ class PaperTradingEngine:
             self.store.release_reservation(connection, cancelled, timestamp)
 
 
-__all__ = ["PaperTradingEngine"]
+class OperationalPaperTradingEngine(PaperTradingEngine):
+    """Lease-fenced paper engine used by the unattended operational worker.
+
+    The base engine is intentionally retained for explicit offline simulation
+    and lower-level fixture tests.  This operational variant cannot mutate
+    paper state unless every financial transaction receives a trusted lease
+    generation; there is no per-call bypass switch.
+    """
+
+    def __init__(
+        self, store: SqlAlchemyPaperStore, config: PaperExecutionConfig | None = None
+    ) -> None:
+        super().__init__(store, config)
+        self._requires_execution_authority = True
+
+
+__all__ = ["OperationalPaperTradingEngine", "PaperTradingEngine"]

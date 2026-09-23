@@ -1,9 +1,25 @@
 #!/usr/bin/env bash
-# Apply the disposable PostgreSQL schema in one explicit, ordered sequence.
+# Apply migrations 001-013 to a fresh, empty PostgreSQL database in one explicit,
+# ordered sequence: a disposable CI/verification database or the new, empty first
+# deployment database (docs/RENDER_DEPLOYMENT.md). It is never an upgrade path and
+# never runs on worker start or restart.
 # No credentials or live-execution capability belong in this script.
 set -euo pipefail
 
-: "${TRADEROS_POSTGRES_TEST_DSN:?set a disposable PostgreSQL libpq DSN}"
+: "${TRADEROS_POSTGRES_TEST_DSN:?set the libpq DSN of a fresh, empty PostgreSQL database}"
+: "${TRADEROS_POSTGRES_FRESH:?set to 1 only for a fresh, empty database}"
+
+if [[ "$TRADEROS_POSTGRES_FRESH" != "1" ]]; then
+  echo "refusing migration initialization without TRADEROS_POSTGRES_FRESH=1" >&2
+  exit 2
+fi
+
+existing_objects="$(psql "$TRADEROS_POSTGRES_TEST_DSN" -Atqc \
+  "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")"
+if [[ "$existing_objects" != "0" ]]; then
+  echo "refusing fresh migration initialization against a non-empty PostgreSQL database" >&2
+  exit 2
+fi
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 migrations=(
@@ -19,6 +35,7 @@ migrations=(
   migrations/010_dataset_content_identity.sql
   migrations/011_worker_data_freshness.sql
   migrations/012_worker_lease_claimant.sql
+  migrations/013_execution_boundary_hardening.sql
 )
 
 for migration in "${migrations[@]}"; do

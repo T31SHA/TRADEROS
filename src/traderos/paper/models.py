@@ -15,7 +15,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from traderos.backtesting.models import OrderSide, OrderType, TimeInForce
+from traderos.backtesting.execution import commission_amount
+from traderos.backtesting.models import CostConfig, OrderSide, OrderType, TimeInForce
 from traderos.data.instruments import Instrument
 from traderos.data.time import require_utc
 from traderos.risk.models import RiskAction, RiskDecision, RiskDecisionStatus
@@ -376,6 +377,11 @@ class PaperOrder:
     authorization_action: RiskAction
     status: PaperOrderStatus
     rejection_reason: str | None = None
+    # These are immutable execution bounds copied from the approved decision.
+    # They are deliberately separate from account capacity and survive restart.
+    authorization_max_new_notional: Decimal = Decimal("0")
+    authorization_max_reduction_notional: Decimal = Decimal("0")
+    authorization_costs_included: bool = True
 
     def __post_init__(self) -> None:
         if not all(
@@ -415,6 +421,14 @@ class PaperOrder:
         for price in (self.limit_price, self.stop_price, self.average_fill_price):
             if price is not None:
                 _finite_positive(price, "order price")
+        for value in (
+            self.authorization_max_new_notional,
+            self.authorization_max_reduction_notional,
+        ):
+            if not value.is_finite() or value < 0:
+                raise PaperTradingError("paper order authorization bounds are invalid")
+        if type(self.authorization_costs_included) is not bool:
+            raise PaperTradingError("paper order authorization cost policy is invalid")
 
     @property
     def remaining_quantity(self) -> Decimal:
@@ -522,6 +536,20 @@ def quantity_for_authorization(
             raise PaperTradingError("reduction-only authorization has no reducible position")
     quantity = (raw_quantity / config.quantity_increment).to_integral_value(rounding=ROUND_DOWN)
     quantity *= config.quantity_increment
+    if authorization.action is RiskAction.NEW_OR_INCREASE:
+        # Policy: the immutable trade bound is all-in notional, including the
+        # configured commission.  Reduce in quantity-increment steps until the
+        # exact canonical cost model fits the original authorization.
+        cost_config = CostConfig(
+            per_unit=config.commission_per_unit,
+            rate=config.commission_rate,
+            minimum=config.minimum_commission,
+        )
+        while quantity >= config.minimum_quantity and (
+            quantity * price + commission_amount(quantity, price, cost_config)
+            > authorization.max_new_notional
+        ):
+            quantity -= config.quantity_increment
     if authorization.action is RiskAction.NEW_OR_INCREASE and quantity < config.minimum_quantity:
         raise PaperTradingError("no durable risk capacity remains")
     if quantity < config.minimum_quantity or quantity > config.maximum_quantity:
@@ -529,7 +557,17 @@ def quantity_for_authorization(
     notional = quantity * price
     if (
         authorization.action is RiskAction.NEW_OR_INCREASE
-        and notional > authorization.max_new_notional
+        and notional
+        + commission_amount(
+            quantity,
+            price,
+            CostConfig(
+                per_unit=config.commission_per_unit,
+                rate=config.commission_rate,
+                minimum=config.minimum_commission,
+            ),
+        )
+        > authorization.max_new_notional
     ):
         raise PaperTradingError("sizing would exceed risk authorization")
     reserved_cash = notional if decision.direction.value == "long" else Decimal("0")

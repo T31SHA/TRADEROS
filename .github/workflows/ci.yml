@@ -44,6 +44,8 @@ jobs:
       - name: Type check
         run: mypy src
       - name: Apply disposable PostgreSQL migrations
+        env:
+          TRADEROS_POSTGRES_FRESH: "1"
         run: scripts/apply_postgres_migrations.sh
       - name: Test
         run: pytest --cov=traderos --cov-report=term-missing

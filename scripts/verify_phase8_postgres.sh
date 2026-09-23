@@ -6,7 +6,7 @@ set -euo pipefail
 : "${TRADEROS_POSTGRES_TEST_URL:?set matching SQLAlchemy URL}"
 python_bin="${TRADEROS_PYTHON:-python}"
 
-scripts/apply_postgres_migrations.sh
+TRADEROS_POSTGRES_FRESH=1 scripts/apply_postgres_migrations.sh
 TRADEROS_POSTGRES_TEST_URL="$TRADEROS_POSTGRES_TEST_URL" \
   "$python_bin" -m pytest -q \
     tests/integration/test_paper_trading_postgres.py \

@@ -6,6 +6,10 @@ market data over the network, and routes any actionable result through the
 existing feature → strategy → fusion → risk → paper path. Missing data,
 ineligible strategies, or a failed safety prerequisite remain `NO_TRADE`.
 
+The first hosted deployment (one blocked PAPER worker on a new, empty
+PostgreSQL 16 database) is described in
+[`RENDER_DEPLOYMENT.md`](RENDER_DEPLOYMENT.md).
+
 Example commands use an isolated SQLite file:
 
 ```bash
@@ -48,9 +52,12 @@ admission recomputes that hash over the exact persisted dataset span. A missing
 or mismatched identity blocks activity; an artifact that binds to a dataset
 identity is admitted only when that hash is present and matches.
 Strategy artifacts must resolve through governance to one of the
-explicitly registered runtime implementations with matching code identity,
-parameters, features, and scope. The worker never promotes a strategy. The
-risk pipeline also requires an explicit event-time system-health snapshot. The
+explicitly registered runtime implementations with a matching implementation
+locator and verified source-manifest content identity, parameters, features,
+and scope. The locator is only a load/diagnostic identity; it is never used as
+the code-content hash. Unknown, mismatched, or legacy locator-only artifacts
+fail closed and do not inherit approval. The worker never promotes a strategy.
+The risk pipeline also requires an explicit event-time system-health snapshot. The
 worker CLI derives one from its local persistence, lease, reconciliation, data,
 strategy, and pipeline checks; it does not attest to an external broker or
 network service. Missing checks still fail closed with
@@ -89,7 +96,30 @@ being reported as a healthy running worker. Supervisor-level failures,
 including heartbeat/lease failures, persist `HEALTH=FAILED` before the lease
 is released. Lease ownership is renewed immediately before paper pipeline
 entry; a lost lease skips execution and cannot overwrite a replacement
-worker's status.
+worker's status. Financial paper mutations additionally carry the lease's
+monotonic fencing generation into their database transaction. The transaction
+locks `worker_leases` first, then the paper account and financial rows; a
+takeover therefore either waits for the complete mutation or makes the stale
+context fail before any order, fill, reservation, or projection can change.
+
+The worker distinguishes bar event time, data ingestion/availability time,
+decision cutoff, and actual processing time. Ingestion is admitted when it is
+available by the decision cutoff; quote and system-health freshness are checked
+against processing time and rechecked immediately before paper mutation.
+Health observations are never backdated to bar close. Historical replay must
+provide its explicit simulated clock rather than relabeling future observations.
+
+The portfolio allocation V1 boundary is documented in
+`docs/PORTFOLIO_ALLOCATION.md`. It requires an explicitly injected, versioned
+allocation policy; the default operational worker has no such policy and
+therefore remains `NO_TRADE` for new risk. Verified strategy order intents are
+converted into deterministic, reservation-aware allocation proposals with
+gross/net, instrument, strategy/family, asset-class, incremental, and turnover
+constraints. The proposal and its portfolio revision are revalidated before
+the existing firewall and generation-fenced paper engine path. Allocation
+trace metadata records policy identity, constraints, attribution, targets,
+reductions, and downstream risk decisions; it makes no correlation or profit
+claim.
 
 Each cycle also persists a `DECISION_TRACE` containing the global gate,
 persistence, reconciliation, data admission, strategy eligibility, feature,
@@ -102,7 +132,8 @@ recorded health; failed outcomes are retried rather than silently normalized.
 
 ## Current progress record
 
-- Source identity: `HEAD a15d8f1` plus the current uncommitted worktree;
+- Source identity: reviewed revision `56ad3ad73d4fe1dced223ee7f5553e2a80d03010`
+  plus the current uncommitted worktree;
   unrelated changes preserved.
 - Implemented: restartable PAPER supervisor, single-worker lease, durable
   cycle/idempotency state, reconciliation gate, completed-bar and qualified
@@ -313,9 +344,9 @@ recorded health; failed outcomes are retried rather than silently normalized.
   command disposes its worker in `finally` after rendering or execution.
 - Tested: focused worker/pipeline/lifecycle/monitoring coverage plus a real
   subprocess lifecycle test for `start`, `status`, `ready`, and `stop`; full
-  suite `510 passed, 11 skipped` locally (the disposable PostgreSQL worker test is
-  skipped without a configured service); full Ruff; and full mypy (`110 source
-  files`). The
+  suite `532 passed, 12 skipped` locally; full Ruff; and full mypy (`115 source
+  files`). The disposable PostgreSQL migration/concurrency verification also
+  passed `13 tests` against PostgreSQL 16. The
   CI and manual PostgreSQL verification paths now share one explicit ordered
   migration runner; its missing-DSN guard was exercised locally and made no
   database connection.

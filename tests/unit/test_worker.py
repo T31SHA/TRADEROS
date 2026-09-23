@@ -1202,7 +1202,10 @@ def test_restart_reconciliation_blocks_corrupted_pending_reservation(tmp_path) -
         market_snapshot_timestamp=now,
     )
     decision = replace(decision, decision_id=risk_decision_integrity_id(decision))
-    order = worker.dependencies.paper_engine.submit(
+    # This fixture creates an already-approved pending order outside the
+    # operational worker path; use the explicit offline simulation boundary.
+    offline_engine = PaperTradingEngine(worker.dependencies.paper_engine.store)
+    order = offline_engine.submit(
         account_id="paper-account",
         idempotency_key="reconcile-pending",
         risk_decision=decision,

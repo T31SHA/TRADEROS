@@ -35,10 +35,18 @@ maximum loss, increases authorization, or mutates a portfolio. Phase 8 v1
 supports same-currency settlement only and models no FX
 conversion or broker margin.
 
+Each order persists the approved trade-level authorization bounds and an
+explicit cost policy. Fill processing sums prior partial-fill notional and
+commission and keeps cumulative cost within that original bound even when a
+quote gaps. A repriced slice may be reduced to the remaining bound; residual
+activity is expired and cannot inherit a larger account capacity. These
+authorization fields survive restart and are immutable.
+
 ## Durable state and transactions
 
 `002_paper_trading.sql`, hardening migration `003_paper_trading_hardening.sql`,
-`004_paper_risk_snapshots.sql`, and the aligned SQLAlchemy schema define
+`004_paper_risk_snapshots.sql`, migration `013_execution_boundary_hardening.sql`,
+and the aligned SQLAlchemy schema define
 accounts, positions, orders, fills, reservations, locks, append-only audit
 events, and append-only risk snapshots. Every material transition produces a
 snapshot of cash, equity, gross/net/long/short exposure, realized/unrealized
@@ -48,6 +56,13 @@ source of truth. `PaperTradingEngine.portfolio_risk_snapshot(account_id)` is
 the explicit one-way adapter to Phase 7's existing `PortfolioRiskSnapshot`;
 daily, emergency, and health locks map conservatively to its manual lock and
 the drawdown lock retains its specific meaning.
+Operational paper mutations first lock and validate the trusted worker lease
+generation, then lock the account, then order/position/reservation rows. This
+ordering serializes lease takeover against financial writes. The base
+`PaperTradingEngine` remains the explicit standalone offline-simulation path;
+`OperationalPaperTradingEngine` requires the trusted execution context and
+has no caller-controlled fencing bypass.
+
 Account rows are locked for submission/fill transitions. An order, reservation,
 and related audit events commit in one transaction. Fills, their accounting
 projection, lifecycle update, reservation release, and audit event likewise
@@ -121,9 +136,9 @@ execution. It remains offline and deterministic.
 ## PostgreSQL verification
 
 The PostgreSQL integration suite is intentionally opt-in and skips unless
-`TRADEROS_POSTGRES_TEST_URL` names a disposable database that already has
-migrations 001 through 006. `scripts/verify_phase8_postgres.sh` applies all
-six migrations and runs the suite when given matching caller-supplied libpq and
-SQLAlchemy URLs. The suite uses independently spawned processes and database
-connections for reservation, idempotency, and fill/cancel races; it does not
-substitute threads or SQLite for those assertions.
+`TRADEROS_POSTGRES_TEST_URL` names a disposable database. The migration runner
+applies migrations 001 through 013 and `scripts/verify_phase8_postgres.sh`
+runs the suite when given matching caller-supplied libpq and SQLAlchemy URLs.
+The suite uses independently spawned processes and database connections for
+reservation, idempotency, fill/cancel, and stale-authority takeover races; it
+does not substitute threads or SQLite for those assertions.

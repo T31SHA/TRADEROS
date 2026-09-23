@@ -33,8 +33,9 @@ from traderos.data.time import require_utc
 from traderos.data.timeframes import Timeframe
 from traderos.database.connection import create_database_engine
 from traderos.database.store import SqlAlchemyMarketDataStore
+from traderos.execution.authority import ExecutionAuthority
 from traderos.monitoring import HealthCheck, LocalSystemHealthMonitor
-from traderos.paper.engine import PaperTradingEngine
+from traderos.paper.engine import OperationalPaperTradingEngine, PaperTradingEngine
 from traderos.paper.models import PaperTradingError
 from traderos.paper.store import SqlAlchemyPaperStore
 from traderos.regimes import EmaPercentileRegimeDetector
@@ -59,6 +60,7 @@ from traderos.strategies import (
     ForexTrendFollowingStrategy,
 )
 from traderos.strategies.base import Strategy
+from traderos.strategies.runtime import implementation_locator, runtime_content_identity
 from traderos.worker.models import (
     DEFAULT_STRATEGY_HEALTH_CYCLE_LIMIT,
     CycleOutcome,
@@ -123,8 +125,9 @@ def _default_runtime_bindings() -> tuple[StrategyRuntimeBinding, ...]:
         StrategyRuntimeBinding(
             implementation_id=strategy.strategy_id,
             implementation_version=strategy.strategy_version,
-            code_identity=f"{strategy.__class__.__module__}:{strategy.__class__.__qualname__}",
+            code_identity=runtime_content_identity(strategy),
             strategy=strategy,
+            implementation_locator=implementation_locator(strategy),
         )
         for strategy in strategies
     )
@@ -180,6 +183,7 @@ class PaperWorker:
         self.owner_id = owner_id or f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex}"
         self._stop_event = threading.Event()
         self._lease_held = False
+        self._execution_authority: ExecutionAuthority | None = None
         self._closed = False
         self._strategies = _parse_strategy_versions(settings.worker_strategy_versions)
 
@@ -214,7 +218,7 @@ class PaperWorker:
                     for item in runtime_bindings
                 ),
             )
-            paper_engine = PaperTradingEngine(paper_store)
+            paper_engine = OperationalPaperTradingEngine(paper_store)
             return cls(
                 settings,
                 store=worker_store,
@@ -321,6 +325,7 @@ class PaperWorker:
                 f"account/workload {workload_id!r} already has an active worker"
             )
         self._lease_held = True
+        self._execution_authority = acquired
         try:
             current = self.store.status(workload_id)
             started = replace(
@@ -360,6 +365,7 @@ class PaperWorker:
             pass
         finally:
             self._lease_held = False
+            self._execution_authority = None
 
     def _finish(self) -> None:
         if not self._lease_held:
@@ -373,6 +379,7 @@ class PaperWorker:
         )
         self.store.release_lease(workload_id, self.owner_id, lease_key=self._lease_key())
         self._lease_held = False
+        self._execution_authority = None
 
     def _mark_failure(self, error: Exception) -> None:
         """Persist supervisor failures before releasing its workload lease."""
@@ -553,10 +560,10 @@ class PaperWorker:
                                     )
                                     execution_health_determined = True
                             if not execution_health_determined:
-                                decision_timestamp = latest.timestamp + latest.timeframe.duration
+                                processing_timestamp = recheck_now
                                 system_health = (
                                     self.dependencies.system_health_provider(
-                                        decision_timestamp,
+                                        processing_timestamp,
                                         (
                                             HealthCheck("worker_lease", self._lease_held),
                                             HealthCheck("persistence", True),
@@ -621,6 +628,8 @@ class PaperWorker:
                                     dataset_version=dataset_version,
                                     dataset_hash=data.dataset_hash,
                                     now=execution_now,
+                                    execution_authority=self._execution_authority,
+                                    processing_clock=self._now,
                                     system_health=system_health,
                                     quality_events=self.dependencies.market_store.quality_events(),
                                 )
@@ -793,7 +802,8 @@ class PaperWorker:
         )
         if latest is None:
             return DataAdmission("BLOCKED", "DATA_UNAVAILABLE", None)
-        if latest.timestamp > now or latest.ingestion_timestamp > now or (
+        decision_timestamp = latest.timestamp + timeframe.duration
+        if latest.timestamp > now or latest.ingestion_timestamp > decision_timestamp or (
             latest.quote_timestamp is not None and latest.quote_timestamp > now
         ):
             return DataAdmission("BLOCKED", "DATA_FUTURE_DATED", latest.timestamp)
@@ -801,7 +811,6 @@ class PaperWorker:
             return DataAdmission("BLOCKED", "DATA_INCOMPLETE", latest.timestamp)
         if now - latest.timestamp > timedelta(seconds=self.settings.worker_data_max_age_seconds):
             return DataAdmission("BLOCKED", "DATA_STALE", latest.timestamp)
-        decision_timestamp = latest.timestamp + timeframe.duration
         if now - decision_timestamp > self.dependencies.paper_engine.config.decision_max_age:
             return DataAdmission("BLOCKED", "DATA_DECISION_STALE", latest.timestamp)
         if latest.bid is None or latest.ask is None:
@@ -813,7 +822,7 @@ class PaperWorker:
         if latest.quote_timestamp > decision_timestamp:
             return DataAdmission("BLOCKED", "DATA_QUOTE_FUTURE_DATED", latest.timestamp)
         if (
-            decision_timestamp - latest.quote_timestamp
+            now - latest.quote_timestamp
             > self.dependencies.paper_engine.config.quote_max_age
         ):
             return DataAdmission("BLOCKED", "DATA_QUOTE_STALE", latest.timestamp)
@@ -821,8 +830,8 @@ class PaperWorker:
             bars = self.dependencies.market_store.query_bars(
                 symbol,
                 timeframe,
-            latest.timestamp - timeframe.duration * 100,
-            now + timeframe.duration,
+                latest.timestamp - timeframe.duration * 100,
+                decision_timestamp,
                 source=self.settings.worker_data_source,
                 adjustment_policy=None,
             )
@@ -1020,16 +1029,18 @@ class PaperWorker:
             if self._stop_event.wait(wait_for):
                 return
             now = self._now()
-            if not self.store.heartbeat(
+            renewed = self.store.heartbeat(
                 self.settings.worker_workload_id,
                 self.owner_id,
                 now=now,
                 duration=timedelta(seconds=self.settings.worker_lease_seconds),
                 lease_key=self._lease_key(),
-            ):
+            )
+            if not renewed:
                 self._lease_held = False
                 self._stop_event.set()
                 raise WorkerError("worker lease was lost")
+            self._execution_authority = renewed
             current = self.store.status(self.settings.worker_workload_id)
             if not self._save_owned_status(
                 replace(current, heartbeat_at=now, worker_state=WorkerState.RUNNING),
@@ -1042,16 +1053,22 @@ class PaperWorker:
         """Fence risk activity behind a fresh lease owned by this worker."""
 
         now = self._now()
-        if not self._lease_held or not self.store.heartbeat(
-            self.settings.worker_workload_id,
-            self.owner_id,
-            now=now,
-            duration=timedelta(seconds=self.settings.worker_lease_seconds),
-            lease_key=self._lease_key(),
-        ):
+        renewed = (
+            self.store.heartbeat(
+                self.settings.worker_workload_id,
+                self.owner_id,
+                now=now,
+                duration=timedelta(seconds=self.settings.worker_lease_seconds),
+                lease_key=self._lease_key(),
+            )
+            if self._lease_held
+            else None
+        )
+        if renewed is None:
             self._lease_held = False
             self._stop_event.set()
             raise WorkerError("worker lease was lost before paper execution")
+        self._execution_authority = renewed
         current = self.store.status(self.settings.worker_workload_id)
         if not self._save_owned_status(
             replace(current, heartbeat_at=now, worker_state=WorkerState.RUNNING),

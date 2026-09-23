@@ -1,6 +1,6 @@
 """Real PostgreSQL verification for the Phase 8 durable paper boundary.
 
-Run only against a disposable database whose migrations 001 through 006 have been
+Run only against a disposable database whose migrations 001 through 013 have been
 applied, for example with ``TRADEROS_POSTGRES_TEST_URL`` set by the local test
 harness.  No test creates a network or broker connection.
 """
@@ -13,8 +13,9 @@ from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from multiprocessing import Barrier, Queue, get_context
+from multiprocessing import Barrier, Event, Queue, get_context
 from queue import Empty
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
@@ -24,6 +25,7 @@ from traderos.data.instruments import AssetClass, Instrument
 from traderos.database.connection import create_database_engine
 from traderos.database.schema import paper_accounts
 from traderos.paper import (
+    OperationalPaperTradingEngine,
     PaperExecutionConfig,
     PaperOrderStatus,
     PaperQuote,
@@ -41,6 +43,7 @@ from traderos.risk import (
     risk_decision_integrity_id,
 )
 from traderos.signals import FusionDirection
+from traderos.worker.store import WorkerStore
 
 POSTGRES_URL_ENV = "TRADEROS_POSTGRES_TEST_URL"
 NOW = datetime(2024, 1, 2, 12, tzinfo=UTC)
@@ -178,6 +181,45 @@ def _fill_or_cancel_worker(
         results.put(("error", type(exc).__name__))
     finally:
         engine.store.engine.dispose()
+
+
+def _stale_authority_worker(
+    url: str,
+    lease_key: str,
+    ready: Event,
+    resume: Event,
+    results: Queue[tuple[str, str]],
+) -> None:
+    """Pause after acquiring a real lease, then resume with a fenced token."""
+
+    paper = OperationalPaperTradingEngine(SqlAlchemyPaperStore(create_database_engine(url)))
+    worker_store = WorkerStore(paper.store.engine)
+    authority = worker_store.acquire_lease(
+        "stale-worker-a",
+        "owner-a",
+        now=NOW,
+        duration=timedelta(seconds=1),
+        lease_key=lease_key,
+    )
+    ready.set()
+    if authority is None or not resume.wait(timeout=20):
+        results.put(("error", "authority_setup"))
+        paper.store.engine.dispose()
+        return
+    try:
+        paper.submit(
+            account_id=ACCOUNT,
+            idempotency_key="stale-worker-order",
+            risk_decision=_decision("stale-worker-order"),
+            quote=_quote(),
+            timestamp=NOW + timedelta(seconds=3),
+            execution_authority=authority,
+        )
+        results.put(("mutated", "order_created"))
+    except PaperTradingError as exc:
+        results.put(("rejected", str(exc)))
+    finally:
+        paper.store.engine.dispose()
 
 
 @pytest.fixture
@@ -344,6 +386,57 @@ def test_postgres_multiprocess_reservation_and_exposure_races(
             ).scalar_one()
             == 1
         )
+
+
+@pytest.mark.integration
+def test_postgres_stale_worker_authority_cannot_mutate_after_lease_takeover(
+    postgres_url: str, postgres_engine: PaperTradingEngine
+) -> None:
+    _create_account(postgres_engine, risk_capacity=Decimal("10000"))
+    lease_key = f"account:{ACCOUNT}:fence:{uuid4().hex}"
+    context = get_context("spawn")
+    ready = context.Event()
+    resume = context.Event()
+    results: Queue[tuple[str, str]] = context.Queue()
+    worker = context.Process(
+        target=_stale_authority_worker,
+        args=(postgres_url, lease_key, ready, resume, results),
+    )
+    worker.start()
+    assert ready.wait(timeout=20)
+
+    worker_store = WorkerStore(postgres_engine.store.engine)
+    replacement = worker_store.acquire_lease(
+        "worker-b",
+        "owner-b",
+        now=NOW + timedelta(seconds=2),
+        duration=timedelta(seconds=30),
+        lease_key=lease_key,
+    )
+    assert replacement is not None
+    assert replacement.generation == 2
+    resume.set()
+    outcome = _collect(results, 1)
+    worker.join(timeout=20)
+
+    assert worker.exitcode == 0
+    assert outcome[0][0] == "rejected"
+    assert "authority is not current" in outcome[0][1]
+    assert postgres_engine.store.orders(ACCOUNT) == ()
+    assert postgres_engine.store.fills(ACCOUNT) == ()
+    assert postgres_engine.store.active_reservation_total_for_account(ACCOUNT) == Decimal("0")
+    account = postgres_engine.store.account(ACCOUNT)
+    assert account.reserved_risk == Decimal("0")
+    assert account.state_revision == 0
+    with postgres_engine.store.engine.connect() as connection:
+        lease = connection.execute(
+            text(
+                "SELECT owner_id, claimed_workload_id, fence_generation "
+                "FROM worker_leases WHERE workload_id = :lease_key"
+            ),
+            {"lease_key": lease_key},
+        ).one()
+    assert tuple(lease) == ("owner-b", "worker-b", 2)
 
 
 @pytest.mark.integration

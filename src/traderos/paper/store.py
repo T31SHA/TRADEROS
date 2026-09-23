@@ -23,7 +23,9 @@ from traderos.database.schema import (
     paper_reservations,
     paper_risk_locks,
     paper_risk_snapshots,
+    worker_leases,
 )
+from traderos.execution.authority import ExecutionAuthority
 from traderos.paper.models import (
     PaperAccount,
     PaperFill,
@@ -316,6 +318,37 @@ class SqlAlchemyPaperStore:
             raise PaperTradingError(f"unknown paper account: {account_id}")
         return self._to_account(row)
 
+    def lock_execution_authority(
+        self, connection: Connection, authority: ExecutionAuthority, *, at: datetime
+    ) -> None:
+        """Lock and validate the lease before any operational paper mutation.
+
+        Lock ordering for operational financial transactions is fixed as:
+        ``worker_leases`` → ``paper_accounts`` → order/position/reservation
+        rows.  Lease takeover uses the first row, so it either waits for the
+        complete financial transaction or wins before the stale transaction
+        can mutate anything.
+        """
+
+        row = (
+            connection.execute(
+                select(worker_leases)
+                .where(worker_leases.c.workload_id == authority.lease_key)
+                .with_for_update()
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if (
+            row is None
+            or row["owner_id"] != authority.owner_id
+            or row["claimed_workload_id"] != authority.workload_id
+            or row["fence_generation"] != authority.generation
+            or row["expires_at"] is None
+            or _utc(row["expires_at"]) <= at
+        ):
+            raise PaperTradingError("operational paper execution authority is not current")
+
     def locked_order_by_idempotency(
         self, connection: Connection, account_id: str, key: str
     ) -> PaperOrder | None:
@@ -422,6 +455,24 @@ class SqlAlchemyPaperStore:
         if row is None:
             raise PaperTradingError(f"missing active reservation for open order: {order_id}")
         return _decimal(row["reserved_risk"]), _decimal(row["reserved_cash"])
+
+    def locked_filled_totals(
+        self, connection: Connection, order_id: str
+    ) -> tuple[Decimal, Decimal]:
+        """Return cumulative executed notional and commission for one order."""
+
+        rows = connection.execute(
+            select(paper_fills.c.quantity, paper_fills.c.price, paper_fills.c.commission)
+            .where(paper_fills.c.order_id == order_id)
+            .with_for_update()
+        ).all()
+        return (
+            sum(
+                (_decimal(quantity) * _decimal(price) for quantity, price, _ in rows),
+                Decimal("0"),
+            ),
+            sum((_decimal(commission) for _, _, commission in rows), Decimal("0")),
+        )
 
     def has_active_lock(self, connection: Connection, account_id: str) -> bool:
         return (
@@ -610,6 +661,10 @@ class SqlAlchemyPaperStore:
             or order.sizing_configuration_id != current.sizing_configuration_id
             or order.source_intent_id != current.source_intent_id
             or order.authorization_action is not current.authorization_action
+            or order.authorization_max_new_notional != current.authorization_max_new_notional
+            or order.authorization_max_reduction_notional
+            != current.authorization_max_reduction_notional
+            or order.authorization_costs_included is not current.authorization_costs_included
         ):
             raise PaperTradingError("order transition cannot alter immutable order authorization")
         if order.filled_quantity < current.filled_quantity:
@@ -1018,6 +1073,9 @@ class SqlAlchemyPaperStore:
             "sizing_configuration_id": value.sizing_configuration_id,
             "source_intent_id": value.source_intent_id,
             "authorization_action": value.authorization_action.value,
+            "authorization_max_new_notional": value.authorization_max_new_notional,
+            "authorization_max_reduction_notional": value.authorization_max_reduction_notional,
+            "authorization_costs_included": value.authorization_costs_included,
             "status": value.status.value,
             "rejection_reason": value.rejection_reason,
         }
@@ -1147,6 +1205,11 @@ class SqlAlchemyPaperStore:
             authorization_action=RiskAction(row["authorization_action"]),
             status=PaperOrderStatus(row["status"]),
             rejection_reason=row["rejection_reason"],
+            authorization_max_new_notional=_decimal(row["authorization_max_new_notional"]),
+            authorization_max_reduction_notional=_decimal(
+                row["authorization_max_reduction_notional"]
+            ),
+            authorization_costs_included=bool(row["authorization_costs_included"]),
         )
 
     @staticmethod

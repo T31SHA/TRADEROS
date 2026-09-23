@@ -327,9 +327,10 @@ def test_repricing_cannot_exceed_reserved_risk_at_fill(engine: PaperTradingEngin
         len(engine.process_quote(account_id="paper-1", quote=item, timestamp=item.timestamp)) == 1
         for item in quotes[:2]
     )
-    assert engine.process_quote(
+    bounded_fill = engine.process_quote(
         account_id="paper-1", quote=quotes[2], timestamp=quotes[2].timestamp
-    ) == ()
+    )
+    assert len(bounded_fill) == 1
     assert engine.store.order("paper-1", order.order_id).status is PaperOrderStatus.EXPIRED
     position = engine.store.position("paper-1", "EUR/USD")
     assert position is not None
@@ -529,7 +530,12 @@ def test_submission_mutation_and_fill_cash_failures_are_rejected(
         max_fill_quantity=Decimal("4"), slippage_absolute=Decimal("3000")
     )
     at = NOW + timedelta(seconds=1)
-    assert engine.process_quote(account_id="paper-1", quote=quote(at), timestamp=at) == ()
+    bounded_fill = engine.process_quote(account_id="paper-1", quote=quote(at), timestamp=at)
+    assert len(bounded_fill) == 1
+    total_cost = sum(
+        (fill.quantity * fill.price + fill.commission for fill in bounded_fill), Decimal("0")
+    )
+    assert total_cost <= Decimal("1000")
     rejected = engine.store.order("paper-1", first.order_id)
-    assert rejected.status is PaperOrderStatus.REJECTED
+    assert rejected.status is PaperOrderStatus.EXPIRED
     assert engine.store.account("paper-1").reserved_risk == Decimal("0")

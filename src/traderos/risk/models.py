@@ -181,9 +181,18 @@ class RiskEvaluationContext:
     market: MarketRiskSnapshot | None
     portfolio: PortfolioRiskSnapshot | None
     system_health: SystemHealthSnapshot | None
+    processing_timestamp: datetime | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.decision_timestamp)
+        if self.processing_timestamp is not None:
+            require_utc(self.processing_timestamp)
+
+    @property
+    def freshness_timestamp(self) -> datetime:
+        """Timestamp against which operational freshness is evaluated."""
+
+        return self.processing_timestamp or self.decision_timestamp
 
 
 @dataclass(frozen=True)
